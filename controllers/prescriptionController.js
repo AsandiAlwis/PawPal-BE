@@ -57,7 +57,8 @@ exports.createPrescription = async (req, res) => {
       duration: duration?.trim() || '',
       instructions: instructions?.trim() || '',
       type,
-      dueDate: dueDate ? new Date(dueDate) : null
+      dueDate: dueDate ? new Date(dueDate) : null,
+      createdBy: req.user.id  // ← Added here: the logged-in veterinarian
     });
 
     await prescription.save();
@@ -65,6 +66,8 @@ exports.createPrescription = async (req, res) => {
     // Populate related data
     await prescription.populate('petId', 'name species breed');
     await prescription.populate('medicalRecordId', 'date diagnosis');
+    // Optional: also populate the vet who created it
+    await prescription.populate('createdBy', 'firstName lastName');
 
     res.status(201).json({
       message: `${type} prescribed successfully`,
@@ -84,31 +87,50 @@ exports.getPrescriptionsByPet = async (req, res) => {
     const { petId } = req.params;
     const { type, activeOnly } = req.query; // Optional filters
 
-    const petExists = await PetProfile.findById(petId);
-    if (!petExists) {
+    // Verify pet exists
+    const pet = await PetProfile.findById(petId);
+    if (!pet) {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    let query = { petId };
+    // Base query: only active (non-deleted) records
+    let query = {
+      petId,
+      isDeleted: { $ne: true }
+    };
 
+    // Filter by type if provided
     if (type && ['Medication', 'Vaccination'].includes(type)) {
       query.type = type;
     }
 
+    // Optional: only show upcoming (dueDate in future) — mainly for vaccinations
     if (activeOnly === 'true') {
       const today = new Date();
+      today.setHours(0, 0, 0, 0); // Normalize to start of day
       query.dueDate = { $gte: today };
     }
 
     const prescriptions = await Prescription.find(query)
-      .populate('medicalRecordId', 'date diagnosis vetId')
-      .sort({ dueDate: -1, createdAt: -1 });
+      .populate('petId', 'name species breed photo')
+      .populate({
+        path: 'medicalRecordId',
+        select: 'date diagnosis visibleToOwner',
+        populate: {
+          path: 'vetId',
+          select: 'firstName lastName'
+        }
+      })
+      .sort({ createdAt: -1 }) // Most recent first — consistent and expected
+      // Alternative: .sort({ dueDate: 1 }) for upcoming first
 
     res.status(200).json({
       count: prescriptions.length,
       prescriptions
     });
+
   } catch (error) {
+    console.error('Error in getPrescriptionsByPet:', error);
     res.status(500).json({
       message: 'Error fetching prescriptions',
       error: error.message
@@ -299,5 +321,121 @@ exports.getVaccinationSummary = async (req, res) => {
       message: 'Error fetching vaccination summary',
       error: error.message
     });
+  }
+};
+
+// Generate and stream PDF prescription
+exports.generatePrescriptionPDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const prescription = await Prescription.findById(id)
+      .populate({
+        path: 'petId',
+        select: 'name species breed dateOfBirth photo ownerId',
+        populate: {
+          path: 'ownerId',
+          select: 'firstName lastName phoneNumber email'
+        }
+      })
+      .populate({
+        path: 'medicalRecordId',
+        select: 'date diagnosis vetId',
+        populate: {
+          path: 'vetId',
+          select: 'firstName lastName'
+        }
+      });
+
+    if (!prescription) {
+      return res.status(404).json({ message: 'Prescription not found' });
+    }
+
+    const pet = prescription.petId;
+    if (!pet) {
+      return res.status(404).json({ message: 'Associated pet not found' });
+    }
+
+    // Install required package: npm install pdfkit
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+
+    // Set headers for download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Prescription_${pet.name}_${prescription.medicationName.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().slice(0,10)}.pdf"`
+    );
+
+    doc.pipe(res);
+
+    // Header
+    doc.fontSize(24).text('Veterinary Prescription', { align: 'center' });
+    doc.moveDown(2);
+
+    // Pet Info
+    doc.fontSize(16).text('Pet Information', { underline: true });
+    doc.fontSize(12)
+      .text(`Name: ${pet.name}`)
+      .text(`Species: ${pet.species}`)
+      .text(`Breed: ${pet.breed || 'Not specified'}`)
+      .text(`Date of Birth: ${pet.dateOfBirth ? new Date(pet.dateOfBirth).toLocaleDateString() : 'Unknown'}`)
+      .moveDown();
+
+    // Owner Info
+    if (pet.ownerId) {
+      doc.fontSize(16).text('Owner Information', { underline: true });
+      doc.fontSize(12)
+        .text(`Name: ${pet.ownerId.firstName} ${pet.ownerId.lastName}`)
+        .text(`Phone: ${pet.ownerId.phoneNumber || 'Not provided'}`)
+        .text(`Email: ${pet.ownerId.email || 'Not provided'}`)
+        .moveDown();
+    }
+
+    // Issuing Vet (if from medical record)
+    if (prescription.medicalRecordId && prescription.medicalRecordId.vetId) {
+      doc.text(`Issued by: Dr. ${prescription.medicalRecordId.vetId.firstName} ${prescription.medicalRecordId.vetId.lastName}`);
+      doc.moveDown();
+    }
+
+    // Prescription Details
+    doc.fontSize(18).text('Prescription Details', { underline: true });
+    doc.moveDown(0.5);
+
+    const details = [
+      { label: 'Type', value: prescription.type },
+      { label: 'Medication/Vaccine', value: prescription.medicationName },
+      { label: 'Dosage', value: prescription.dosage },
+      { label: 'Duration', value: prescription.duration || 'N/A' },
+      { label: 'Due Date / Next Booster', value: prescription.dueDate ? new Date(prescription.dueDate).toLocaleDateString() : 'N/A' },
+    ];
+
+    details.forEach(item => {
+      doc.fontSize(14).text(`${item.label}:`, { continued: true });
+      doc.fontSize(14).text(` ${item.value}`, { align: 'left' });
+    });
+
+    doc.moveDown(2);
+
+    // Instructions
+    doc.fontSize(16).text('Instructions', { underline: true });
+    doc.fontSize(12).text(
+      prescription.instructions || 'No specific instructions provided.',
+      { align: 'justify' }
+    );
+
+    // Footer
+    doc.moveDown(4);
+    doc.fontSize(10)
+      .text(`Issued on: ${new Date().toLocaleDateString()}`, { align: 'center' })
+      .text('This is an official veterinary prescription.', { align: 'center' });
+
+    doc.end();
+
+  } catch (error) {
+    console.error('PDF Generation Error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Failed to generate PDF' });
+    }
   }
 };

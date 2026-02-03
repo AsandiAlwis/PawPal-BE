@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const upload = require('../middleware/upload');
 const {
   createMedicalRecord,
   getRecordsByPet,
@@ -81,6 +82,24 @@ router.get('/summary/pet/:petId', protect, (req, res, next) => {
 // - Owners: only if visibleToOwner = true
 // - Vets: full access
 router.get('/:id', protect, getRecordById);
+
+// NEW: Direct upload route (optional, or handle in createMedicalRecord)
+router.post(
+  '/upload',
+  protect,
+  upload.array('attachments', 10),
+  (req, res) => {
+    try {
+      const attachments = req.files.map(file => file.path); // Cloudinary secure_url
+      res.status(200).json({
+        message: 'Files uploaded successfully',
+        attachments
+      });
+    } catch (error) {
+      res.status(500).json({ message: 'Upload failed', error: error.message });
+    }
+  }
+);
 
 // Optional Enhancement: Add stricter vet clinic check
 // Uncomment and adjust if vets should only access records from their clinic

@@ -1,7 +1,7 @@
 const MedicalRecord = require('../models/MedicalRecord');
 const PetProfile = require('../models/PetProfile');
+const { cloudinary } = require('../config/cloudinary');
 
-// Create a new medical record (Only Veterinarian)
 exports.createMedicalRecord = async (req, res) => {
   try {
     const {
@@ -9,7 +9,7 @@ exports.createMedicalRecord = async (req, res) => {
       diagnosis,
       treatmentNotes,
       visibleToOwner = false,
-      attachments = [] // Array of file URLs (uploaded via Multer/Cloudinary)
+      attachments = [] // Now expect array of Cloudinary URLs from frontend
     } = req.body;
 
     if (!petId || !diagnosis?.trim()) {
@@ -18,30 +18,29 @@ exports.createMedicalRecord = async (req, res) => {
       });
     }
 
-    // Verify pet exists and is registered with a clinic
     const pet = await PetProfile.findById(petId)
-      .populate('registeredClinicId', 'name')
-      .select('name ownerId registeredClinicId');
+      .populate('registeredClinicId')
+      .select('name registeredClinicId');
 
     if (!pet) {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    // Optional: Ensure vet belongs to the pet's registered clinic (enforced via auth middleware later)
+    // Optional: Check if vet belongs to pet's clinic
+    // (You can add this later via req.user.clinicId)
 
     const record = new MedicalRecord({
       petId,
-      vetId: req.body.vetId || req.user?.id, // From JWT after auth
+      vetId: req.user.id,
       diagnosis: diagnosis.trim(),
       treatmentNotes: treatmentNotes?.trim() || '',
       visibleToOwner,
-      attachments,
-      date: new Date() // Override if needed
+      attachments, // ← Cloudinary URLs
+      date: new Date()
     });
 
     await record.save();
 
-    // Populate vet and pet info
     await record.populate('vetId', 'firstName lastName specialization');
     await record.populate('petId', 'name species breed photo');
 
@@ -50,7 +49,8 @@ exports.createMedicalRecord = async (req, res) => {
       record
     });
   } catch (error) {
-    res.status(400).json({
+    console.error('Error creating medical record:', error);
+    res.status(500).json({
       message: 'Error creating medical record',
       error: error.message
     });
@@ -69,7 +69,10 @@ exports.getRecordsByPet = async (req, res) => {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    const query = { petId };
+    const query = { 
+      petId,
+      isDeleted: { $ne: true } // ← ADD THIS LINE: Exclude soft-deleted records
+    };
 
     // If ownerView=true → only show records marked visibleToOwner
     if (ownerView === 'true') {
@@ -78,7 +81,7 @@ exports.getRecordsByPet = async (req, res) => {
 
     const records = await MedicalRecord.find(query)
       .populate('vetId', 'firstName lastName specialization')
-      .sort({ date: -1 }) // Latest first
+      .sort({ date: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
 
@@ -199,24 +202,30 @@ exports.toggleVisibility = async (req, res) => {
   }
 };
 
-// Soft delete (recommended instead of hard delete)
 exports.deleteMedicalRecord = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const record = await MedicalRecord.findByIdAndUpdate(
-      id,
-      { isDeleted: true, deletedAt: new Date() },
-      { new: true }
-    );
-
+    const record = await MedicalRecord.findById(id);
     if (!record) {
       return res.status(404).json({ message: 'Medical record not found' });
     }
 
+    // Optional: Delete files from Cloudinary
+    if (record.attachments.length > 0) {
+      const publicIds = record.attachments.map(url => {
+        const parts = url.split('/');
+        const fileName = parts[parts.length - 1];
+        const publicId = `vet-medical-records/${fileName.split('.')[0]}`;
+        return publicId;
+      });
+      await cloudinary.api.delete_resources(publicIds);
+    }
+
+    await MedicalRecord.findByIdAndDelete(id);
+
     res.status(200).json({
-      message: 'Medical record deleted successfully (soft delete)',
-      record
+      message: 'Medical record permanently deleted'
     });
   } catch (error) {
     res.status(500).json({

@@ -8,7 +8,9 @@ const {
   updateAppointment,
   cancelAppointment,
   confirmAppointment,
-  getAppointmentById
+  getAppointmentById,
+  getTodayAppointmentsCountByVet,
+  getMyAppointments 
 } = require('../controllers/appointmentController');
 
 const { protect, authorize } = require('../middleware/auth');
@@ -29,16 +31,23 @@ const allowCancel = (req, res, next) => {
 // === Routes ===
 
 // Book appointment (owner only)
-router.post('/book', protect, authorize('owner'), bookAppointment);
+router.post('/book', protect, bookAppointment);
 
 // Get appointments by pet (owner only)
-router.get('/pet/:petId', protect, authorize('owner'), getAppointmentsByPet);
+router.get('/pet/:petId', protect, getAppointmentsByPet);
 
 // Get single appointment (authenticated user)
 router.get('/:id', protect, getAppointmentById);
 
 // Vet routes
-router.get('/vet/:vetId', protect, authorize('vet'), getAppointmentsByVet);
+router.get('/vet/:vetId', protect, getAppointmentsByVet);
+
+// routes/appointmentRoutes.js
+router.get(
+  '/vet/:vetId/today-count',
+  protect,
+  getTodayAppointmentsCountByVet
+);
 //router.get('/clinic/:clinicId/upcoming', protect, authorize('vet'), getUpcomingAppointmentsByClinic);
 
 // Update appointment (vet only)
@@ -49,5 +58,8 @@ router.get('/vet/:vetId', protect, authorize('vet'), getAppointmentsByVet);
 
 // Cancel appointment (owner or vet)
 //router.patch('/:id/cancel', protect, allowCancel, cancelAppointment);
+
+// Then add this route (place it after the '/book' route):
+router.get('/owner/my-appointments', protect, authorize('owner'), getMyAppointments);
 
 module.exports = router;

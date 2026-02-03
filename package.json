@@ -11,12 +11,23 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@langchain/community": "^1.1.7",
+    "@langchain/core": "^1.1.17",
+    "@langchain/ollama": "^1.2.1",
+    "@langchain/openai": "^1.2.3",
+    "axios": "^1.13.3",
     "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "faiss-node": "^0.5.1",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.0.1"
+    "langchain": "^1.2.13",
+    "mongoose": "^9.0.1",
+    "multer": "^2.0.2",
+    "multer-storage-cloudinary": "^4.0.0",
+    "pdfkit": "^0.17.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
