@@ -1,32 +1,25 @@
 const ChatMessage = require('../models/ChatMessage');
 const PetProfile = require('../models/PetProfile');
+const mongoose = require('mongoose');
 
-// Send a new message (Owner or Vet)
+// Send a new message (Owner or Vet) — uses req.user from auth middleware
 exports.sendMessage = async (req, res) => {
   try {
-    const { petId, senderId, senderType, content, attachments } = req.body;
+    const { petId, content, attachments } = req.body;
+    const senderId = req.user.id;
+    const senderType = req.user.role === 'owner' ? 'Owner' : 'Vet';
 
-    // Validation
-    if (!petId || !senderId || !senderType || !content?.trim()) {
-      return res.status(400).json({
-        message: 'petId, senderId, senderType, and non-empty content are required'
-      });
+    if (!petId || !content?.trim()) {
+      return res.status(400).json({ message: 'petId and content are required' });
     }
 
-    if (!['Owner', 'Vet'].includes(senderType)) {
-      return res.status(400).json({
-        message: 'senderType must be "Owner" or "Vet"'
-      });
-    }
-
-    // Verify that the pet exists and is registered (optional strict check)
-    const pet = await PetProfile.findById(petId).select('name registeredClinicId ownerId');
-    if (!pet) {
-      return res.status(404).json({ message: 'Pet not found' });
-    }
-
-    // Optional: Add access control later via middleware
-    // e.g., ensure sender is either the owner or a vet from the registered clinic
+    const pet = await PetProfile.findById(petId)
+      .select('name registeredClinicId ownerId')
+      .populate([
+        { path: 'ownerId', select: 'firstName lastName email' },
+        { path: 'registeredClinicId', select: 'name' }
+      ]);
+    if (!pet) return res.status(404).json({ message: 'Pet not found' });
 
     const message = new ChatMessage({
       petId,
@@ -34,117 +27,96 @@ exports.sendMessage = async (req, res) => {
       senderType,
       content: content.trim(),
       attachments: attachments || [],
-      timestamp: new Date() // Explicitly set (though default exists)
+      timestamp: new Date()
     });
 
     await message.save();
 
-    // Populate sender info for better frontend display
     const populatedMessage = await ChatMessage.findById(message._id)
-      .populate('senderId', 'firstName lastName profilePhoto') // Works if sender is Owner or Vet (assuming similar fields)
+      .populate('senderId', 'firstName lastName profilePhoto specialization')
       .lean();
 
-    // For real-time: This data will be broadcasted via Socket.io later
-    res.status(201).json({
-      message: 'Message sent successfully',
-      data: populatedMessage
-    });
+    // Emit via Socket.IO to the pet's chat room for real-time delivery
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`chat_pet_${petId}`).emit('new_message', populatedMessage);
+
+      // Also emit a notification to the other party's room
+      if (senderType === 'Owner') {
+        // Notify vet/clinic staff — emit to clinic channel
+        if (pet.registeredClinicId?._id) {
+          io.to(`clinic_${pet.registeredClinicId._id}`).emit('chat_notification', {
+            petId,
+            petName: pet.name,
+            senderName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || 'Owner',
+            content: content.trim()
+          });
+        }
+      } else {
+        // Notify owner
+        if (pet.ownerId?._id) {
+          io.to(`user_${pet.ownerId._id}`).emit('chat_notification', {
+            petId,
+            petName: pet.name,
+            senderName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || 'Vet',
+            content: content.trim()
+          });
+        }
+      }
+    }
+
+    res.status(201).json({ message: 'Message sent', data: populatedMessage });
   } catch (error) {
-    res.status(400).json({
-      message: 'Error sending message',
-      error: error.message
-    });
+    res.status(400).json({ message: 'Error sending message', error: error.message });
   }
 };
 
-// Get chat history for a specific pet (with pagination)
+// Get full chat history for a pet
 exports.getChatHistory = async (req, res) => {
   try {
     const { petId } = req.params;
-    const { limit = 50, page = 1, before } = req.query;
+    const { limit = 60, page = 1 } = req.query;
 
-    if (!petId) {
-      return res.status(400).json({ message: 'petId is required' });
-    }
-
-    const query = { petId };
-
-    // Optional: Load messages before a specific timestamp (for infinite scroll)
-    if (before) {
-      query.timestamp = { $lt: new Date(before) };
-    }
-
-    const messages = await ChatMessage.find(query)
-      .sort({ timestamp: -1 }) // Newest first for pagination
+    const messages = await ChatMessage.find({ petId })
+      .sort({ timestamp: -1 })
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit))
-      .populate('senderId', 'firstName lastName profilePhoto specialization') // Vet may have specialization
+      .populate('senderId', 'firstName lastName profilePhoto specialization')
       .lean();
 
-    // Reverse to return in chronological order (oldest → newest)
-    const chronologicalMessages = messages.reverse();
-
-    // Get total count for pagination metadata
+    const chronological = messages.reverse();
     const total = await ChatMessage.countDocuments({ petId });
 
     res.status(200).json({
-      messages: chronologicalMessages,
-      pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        hasMore: chronologicalMessages.length === parseInt(limit)
-      }
+      messages: chronological,
+      pagination: { total, page: parseInt(page), limit: parseInt(limit), hasMore: chronological.length === parseInt(limit) }
     });
   } catch (error) {
-    res.status(500).json({
-      message: 'Error fetching chat history',
-      error: error.message
-    });
+    res.status(500).json({ message: 'Error fetching chat history', error: error.message });
   }
 };
 
-// Get the latest message for a pet (useful for chat list preview)
-exports.getLatestMessageByPet = async (req, res) => {
-  try {
-    const { petId } = req.params;
-
-    const latestMessage = await ChatMessage.findOne({ petId })
-      .sort({ timestamp: -1 })
-      .populate('senderId', 'firstName lastName')
-      .lean();
-
-    res.status(200).json(latestMessage || null);
-  } catch (error) {
-    res.status(500).json({
-      message: 'Error fetching latest message',
-      error: error.message
-    });
-  }
-};
-
-// Get all active chat conversations for a user (Owner or Vet)
-// For chat list/dashboard
+// Get chat list for the authenticated user
 exports.getUserChatList = async (req, res) => {
   try {
-    const { userId, userType } = req.query; // Will come from auth later
-
-    if (!userId || !['Owner', 'Vet'].includes(userType)) {
-      return res.status(400).json({
-        message: 'userId and valid userType (Owner/Vet) are required'
-      });
-    }
+    const userId = req.user.id;
+    const userRole = req.user.role; // 'owner' or 'vet'
 
     let matchCondition;
-    if (userType === 'Owner') {
-      // Get pets owned by user, then latest message per pet
+
+    if (userRole === 'owner') {
       const ownerPets = await PetProfile.find({ ownerId: userId }).select('_id');
       const petIds = ownerPets.map(p => p._id);
-
       matchCondition = { petId: { $in: petIds } };
     } else {
-      // Vet: messages where they are the sender
-      matchCondition = { senderId: userId, senderType: 'Vet' };
+      // Vet: get all chats this vet sent OR any chats for pets registered in their clinic
+      matchCondition = { senderId: userId };
+      // Also include chats for pets at their clinic
+      if (req.user.clinicId) {
+        const clinicPets = await PetProfile.find({ registeredClinicId: req.user.clinicId }).select('_id');
+        const clinicPetIds = clinicPets.map(p => p._id);
+        matchCondition = { petId: { $in: clinicPetIds } };
+      }
     }
 
     const chats = await ChatMessage.aggregate([
@@ -154,7 +126,20 @@ exports.getUserChatList = async (req, res) => {
         $group: {
           _id: '$petId',
           latestMessage: { $first: '$$ROOT' },
-          unreadCount: { $sum: 0 } // Placeholder – implement with read receipts later
+          unreadCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$isRead', false] },
+                    { $ne: ['$senderId', new mongoose.Types.ObjectId(userId)] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          }
         }
       },
       {
@@ -174,13 +159,16 @@ exports.getUserChatList = async (req, res) => {
           as: 'owner'
         }
       },
-      { $unwind: { path: '$owner', preserveNullOrEmptyArrays: true } },
+      { $unwind: { path: '$owner', preserveNullAndEmptyArrays: true } },
       {
         $project: {
           petId: '$_id',
           petName: '$pet.name',
           petPhoto: '$pet.photo',
+          petSpecies: '$pet.species',
           ownerName: { $concat: ['$owner.firstName', ' ', '$owner.lastName'] },
+          ownerId: '$pet.ownerId',
+          unreadCount: 1,
           latestMessage: {
             content: '$latestMessage.content',
             timestamp: '$latestMessage.timestamp',
@@ -191,25 +179,50 @@ exports.getUserChatList = async (req, res) => {
       { $sort: { 'latestMessage.timestamp': -1 } }
     ]);
 
-    res.status(200).json({
-      count: chats.length,
-      chats
-    });
+    res.status(200).json({ count: chats.length, chats });
   } catch (error) {
-    res.status(500).json({
-      message: 'Error fetching user chat list',
-      error: error.message
-    });
+    res.status(500).json({ message: 'Error fetching chat list', error: error.message });
   }
 };
 
-// Mark messages as read (future enhancement placeholder)
+// Get the latest message for a pet (preview)
+exports.getLatestMessageByPet = async (req, res) => {
+  try {
+    const { petId } = req.params;
+    const latestMessage = await ChatMessage.findOne({ petId })
+      .sort({ timestamp: -1 })
+      .populate('senderId', 'firstName lastName')
+      .lean();
+    res.status(200).json(latestMessage || null);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching latest message', error: error.message });
+  }
+};
+
+// Mark messages as read (placeholder)
 exports.markMessagesAsRead = async (req, res) => {
   try {
-    const { petId, userId } = req.body;
-    // Implement read receipts logic here (e.g., separate ReadReceipt model)
-    res.status(200).json({ message: 'Messages marked as read (feature pending)' });
+    const { petId } = req.body;
+    if (!petId) return res.status(400).json({ message: 'petId is required' });
+
+    const userRole = req.user.role === 'owner' ? 'Owner' : 'Vet';
+    const senderToMark = userRole === 'Owner' ? 'Vet' : 'Owner';
+
+    const result = await ChatMessage.updateMany(
+      {
+        petId,
+        senderType: senderToMark,
+        isRead: { $ne: true }
+      },
+      { $set: { isRead: true } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Messages marked as read',
+      modified: result.modifiedCount > 0
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ message: 'Error marking messages as read', error: error.message });
   }
 };

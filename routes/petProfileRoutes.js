@@ -61,49 +61,31 @@ router.get('/clinic/pending', protect, authorize('vet'), async (req, res) => {
     console.log('=== GET /clinic/pending ===');
     console.log('User:', req.user.id, req.user.role);
 
-    // Use req.user.id — reliable and already verified
-    const vet = await Veterinarian.findById(req.user.id)
-      .select('currentActiveClinicId clinicId firstName lastName');
+    const isEnhanced = req.user.accessLevel === 'Enhanced';
 
-    if (!vet) {
-      return res.status(404).json({
-        success: false,
-        message: 'Veterinarian not found'
-      });
-    }
-
-    const clinicId = vet.currentActiveClinicId || vet.clinicId;
-
-    if (!clinicId) {
-      return res.status(400).json({
-        success: false,
-        message: 'No active clinic assigned to this veterinarian'
-      });
-    }
-
-    // Fetch the clinic (optional — just for name in response)
-    const clinic = await Clinic.findById(clinicId).select('name address phoneNumber');
-
-    const pendingPets = await PetProfile.find({
-      registeredClinicId: clinicId,
+    let query = {
       registrationStatus: 'Pending',
       isDeleted: { $ne: true }
-    })
+    };
+
+    if (!isEnhanced) {
+      if (!req.user.clinicId) {
+        return res.status(200).json({ success: true, count: 0, pendingPets: [], isGlobalView: false });
+      }
+      query.registeredClinicId = req.user.clinicId;
+    }
+
+    const pendingPets = await PetProfile.find(query)
       .populate('ownerId', 'firstName lastName email phoneNumber')
       .populate('registeredClinicId', 'name address phoneNumber')
       .sort({ createdAt: -1 })
-      .lean(); // faster response
+      .lean();
 
     return res.status(200).json({
       success: true,
       count: pendingPets.length,
       pendingPets,
-      clinicInfo: clinic ? {
-        id: clinic._id,
-        name: clinic.name,
-        address: clinic.address,
-        phoneNumber: clinic.phoneNumber
-      } : { id: clinicId }
+      isGlobalView: isEnhanced
     });
   } catch (error) {
     console.error('Error in /clinic/pending:', error);

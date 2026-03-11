@@ -15,9 +15,9 @@ exports.protect = async (req, res, next) => {
 
   if (!token) {
     console.log('No token provided');
-    return res.status(401).json({ 
+    return res.status(401).json({
       success: false,
-      message: 'Not authorized, no token provided' 
+      message: 'Not authorized, no token provided'
     });
   }
 
@@ -34,9 +34,9 @@ exports.protect = async (req, res, next) => {
 
     if (!userId) {
       console.error('No user ID found in token');
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Invalid token: no user ID' 
+        message: 'Invalid token: no user ID'
       });
     }
 
@@ -49,18 +49,25 @@ exports.protect = async (req, res, next) => {
         role = 'vet';
         console.log('Determined role: vet');
       } else {
-        user = await PetOwner.findById(userId).select('-passwordHash');
+        const ClinicStaff = require('../models/ClinicStaff');
+        user = await ClinicStaff.findById(userId).select('-passwordHash');
         if (user) {
-          role = 'owner';
-          console.log('Determined role: owner');
+          role = 'vet';
+          console.log('Determined role: vet (ClinicStaff)');
+        } else {
+          user = await PetOwner.findById(userId).select('-passwordHash');
+          if (user) {
+            role = 'owner';
+            console.log('Determined role: owner');
+          }
         }
       }
 
       if (!role) {
         console.error('Could not determine user role from either collection');
-        return res.status(401).json({ 
+        return res.status(401).json({
           success: false,
-          message: 'User not found or invalid role' 
+          message: 'User not found or invalid role'
         });
       }
     }
@@ -75,28 +82,48 @@ exports.protect = async (req, res, next) => {
         user = await Veterinarian.findById(userId)
           .select('-passwordHash')
           .populate('currentActiveClinicId', 'name address phoneNumber');
-        console.log('Fetched Veterinarian with populate:', user ? 'Found' : 'Not found');
+
+        if (!user) {
+          const ClinicStaff = require('../models/ClinicStaff');
+          user = await ClinicStaff.findById(userId)
+            .select('-passwordHash')
+            .populate('clinicId', 'name address phoneNumber');
+
+          if (user) {
+            user.currentActiveClinicId = user.clinicId; // Map for downstream middleware
+            user.role = 'vet'; // Ensure logical processing
+          }
+        }
+        console.log('Fetched Veterinarian/Staff with populate:', user ? 'Found' : 'Not found');
       } catch (populateError) {
         console.log('Populate failed:', populateError.message);
         user = await Veterinarian.findById(userId).select('-passwordHash');
-        console.log('Fetched Veterinarian (no populate):', user ? 'Found' : 'Not found');
+        if (!user) {
+          const ClinicStaff = require('../models/ClinicStaff');
+          user = await ClinicStaff.findById(userId).select('-passwordHash');
+          if (user) {
+            user.currentActiveClinicId = user.clinicId;
+            user.role = 'vet';
+          }
+        }
+        console.log('Fetched Veterinarian/Staff (no populate):', user ? 'Found' : 'Not found');
       }
     }
 
     if (!user) {
       console.error(`User not found for ID: ${userId}, role: ${role}`);
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Not authorized, user not found' 
+        message: 'Not authorized, user not found'
       });
     }
 
     // Vet-specific status check
     if (role === 'vet' && user.status !== 'Active') {
       console.error('Veterinarian is not active:', user.status);
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Account is not active. Please contact administrator.' 
+        message: 'Account is not active. Please contact administrator.'
       });
     }
 
@@ -130,9 +157,10 @@ exports.protect = async (req, res, next) => {
       }
 
       req.user.currentActiveClinicId = user.currentActiveClinicId || null;
-      req.user.isPrimaryVet   = user.isPrimaryVet || false;
-      req.user.ownedClinics   = user.ownedClinics || [];
-      
+      req.user.isPrimaryVet = user.isPrimaryVet || false;
+      req.user.ownedClinics = user.ownedClinics || [];
+      req.user.staffRole = user.role || null;
+
       console.log('Vet clinic info:', req.user.clinic);
     }
 
@@ -141,25 +169,25 @@ exports.protect = async (req, res, next) => {
     console.error('=== AUTH MIDDLEWARE ERROR ===');
     console.error('Error name:', error.name);
     console.error('Error message:', error.message);
-    
+
     if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Invalid token signature' 
-      });
-    }
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Token expired, please login again' 
+        message: 'Invalid token signature'
       });
     }
 
-    return res.status(401).json({ 
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Token expired, please login again'
+      });
+    }
+
+    return res.status(401).json({
       success: false,
       message: 'Not authorized, token failed',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -172,16 +200,16 @@ exports.authorize = (...roles) => {
     console.log('Required roles:', roles);
 
     if (!req.user || !req.user.role) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Not authenticated' 
+        message: 'Not authenticated'
       });
     }
 
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        message: `Forbidden: required role is one of: ${roles.join(', ')}` 
+        message: `Forbidden: required role is one of: ${roles.join(', ')}`
       });
     }
 
@@ -190,13 +218,13 @@ exports.authorize = (...roles) => {
   };
 };
 
-// Authorize vet access levels (Primary, Full Access, Normal Access)
+// Authorize vet access levels (Enhanced, Basic)
 exports.authorizeVetAccess = (...levels) => {
   return (req, res, next) => {
     if (req.user.role !== 'vet') {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        message: 'Vet access required' 
+        message: 'Vet access required'
       });
     }
 
@@ -219,16 +247,16 @@ const authorizeVetForClinicFromPet = async (req, res, next) => {
     const pet = await PetProfile.findById(id);
 
     if (!pet) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        message: 'Pet not found' 
+        message: 'Pet not found'
       });
     }
 
     if (!pet.registeredClinicId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'This pet has no clinic registration request' 
+        message: 'This pet has no clinic registration request'
       });
     }
 
@@ -253,10 +281,10 @@ const authorizeVetForClinicFromPet = async (req, res, next) => {
     req.pet = pet;
     next();
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Error in vet clinic authorization', 
-      error: error.message 
+      message: 'Error in vet clinic authorization',
+      error: error.message
     });
   }
 };

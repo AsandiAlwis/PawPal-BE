@@ -6,7 +6,12 @@ const petOwnerSchema = new mongoose.Schema({
   address: { type: String, required: true },
   phoneNumber: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  passwordHash: { type: String, required: true }, // Use bcrypt for hashing
+  passwordHash: { type: String }, // Optional for Google Auth users
+  googleId: { type: String, unique: true, sparse: true },
+  twoFactorSecret: { type: String },
+  isTwoFactorEnabled: { type: Boolean, default: false },
+  resetPasswordToken: { type: String },
+  resetPasswordExpires: { type: Date },
   profilePhoto: { type: String }, // URL to image
   location: {
     type: { type: String, enum: ['Point'], default: 'Point' },

@@ -19,7 +19,8 @@ router.post('/register', registerOwner);
 
 // Middleware to ensure user can only access their own profile
 const authorizeSelf = (req, res, next) => {
-  if (req.user.role === 'owner' && req.params.id !== req.user.id) {
+  // Convert both to strings to ensure correct comparison (req.user.id is an ObjectId)
+  if (req.user.role === 'owner' && req.params.id.toString() !== req.user.id.toString()) {
     return res.status(403).json({
       message: 'Not authorized: You can only access your own profile'
     });
@@ -39,14 +40,14 @@ router.put('/:id', protect, authorize('owner'), updateOwner);
 // Soft-delete own account (optional — dangerous, you might want to disable)
 router.delete('/:id', protect, authorize('owner'), authorizeSelf, deleteOwner);
 
-// === Admin / Vet Primary Routes ===
+// === Admin / Vet Enhanced Routes ===
 // List all owners (useful for clinic admins or support)
-router.get('/', protect, authorize('vet'), authorizeVetAccess('Primary'), getAllOwners);
+router.get('/', protect, authorize('vet'), authorizeVetAccess('Enhanced'), getAllOwners);
 
-// Primary Vet can delete owner accounts if needed (rare, but possible for support)
-router.delete('/:id', protect, authorize('vet'), authorizeVetAccess('Primary'), deleteOwner);
+// Enhanced Vet can delete owner accounts if needed (rare, but possible for support)
+router.delete('/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), deleteOwner);
 
-// Optional: Allow Primary Vets to view any owner profile (e.g., during support)
-router.get('/:id', protect, authorize('vet'), authorizeVetAccess('Primary'), getOwnerById);
+// Optional: Allow Enhanced Vets to view any owner profile (e.g., during support)
+router.get('/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), getOwnerById);
 
 module.exports = router;

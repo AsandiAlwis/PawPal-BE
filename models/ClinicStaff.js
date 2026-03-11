@@ -5,8 +5,12 @@ const clinicStaffSchema = new mongoose.Schema({
   clinicId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Clinic',
-    required: true
+    required: false
   },
+  assignedClinics: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Clinic'
+  }],
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -14,18 +18,11 @@ const clinicStaffSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   role: {
     type: String,
-    enum: [
-      'Receptionist',
-      'Vet Tech',
-      'Assistant',
-      'Manager',
-      'Kennel Staff'
-    ],
     required: true
   },
   accessLevel: {
     type: String,
-    enum: ['Basic', 'Moderate', 'Admin'],
+    enum: ['Enhanced', 'Basic'],
     default: 'Basic'
   },
   createdBy: {
@@ -35,7 +32,7 @@ const clinicStaffSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Active', 'Inactive','Deleted'],
+    enum: ['Active', 'Inactive', 'Deleted'],
     default: 'Active'
   }
 }, { timestamps: true });

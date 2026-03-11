@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const medicalRecordSchema = new mongoose.Schema({
   petId: { type: mongoose.Schema.Types.ObjectId, ref: 'PetProfile', required: true },
   vetId: { type: mongoose.Schema.Types.ObjectId, ref: 'Veterinarian', required: true },
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
   date: { type: Date, default: Date.now },
   diagnosis: { type: String },
   treatmentNotes: { type: String },

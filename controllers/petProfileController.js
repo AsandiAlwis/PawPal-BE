@@ -2,6 +2,8 @@ const PetProfile = require('../models/PetProfile');
 const PetOwner = require('../models/PetOwner');
 const Clinic = require('../models/Clinic');
 const Veterinarian = require('../models/Veterinarian');
+const ClinicStaff = require('../models/ClinicStaff');
+const ChatMessage = require('../models/ChatMessage');
 
 // Create a new pet profile (Pet Owner only)
 exports.createPet = async (req, res) => {
@@ -14,7 +16,8 @@ exports.createPet = async (req, res) => {
       gender,
       color,
       weight,
-      microchipNumber,
+      lastVaccinationDate,
+      medicalRecords,
       photo,
       notes,
       clinicId // ← ADD THIS
@@ -64,7 +67,8 @@ exports.createPet = async (req, res) => {
       gender,
       color: color?.trim() || '',
       weight: weight ? parseFloat(weight) : null,
-      microchipNumber: microchipNumber?.trim() || '',
+      lastVaccinationDate: lastVaccinationDate ? new Date(lastVaccinationDate) : null,
+      medicalRecords: medicalRecords || '',
       photo: photo || '',
       notes: notes?.trim() || '',
       registrationStatus: clinicId ? 'Pending' : 'Pending', // Still pending until approved
@@ -103,7 +107,7 @@ exports.getPetsByOwner = async (req, res) => {
       return res.status(404).json({ message: 'Owner not found' });
     }
 
-    let query = { 
+    let query = {
       ownerId,
       isDeleted: { $ne: true }  // ← THIS LINE IS THE FIX: exclude soft-deleted pets
     };
@@ -116,9 +120,22 @@ exports.getPetsByOwner = async (req, res) => {
       .populate('registeredClinicId', 'name address phoneNumber')
       .sort({ name: 1 });
 
+    // Fetch the last message for each pet
+    const petsWithLastMessage = await Promise.all(pets.map(async (pet) => {
+      const lastMsg = await ChatMessage.findOne({ petId: pet._id })
+        .sort({ timestamp: -1 })
+        .limit(1);
+
+      return {
+        ...pet.toObject(),
+        lastMessage: lastMsg ? lastMsg.content : null,
+        lastMessageTime: lastMsg ? lastMsg.timestamp : null
+      };
+    }));
+
     res.status(200).json({
       count: pets.length,
-      pets
+      pets: petsWithLastMessage
     });
   } catch (error) {
     console.error('Error in getPetsByOwner:', error);
@@ -267,7 +284,7 @@ exports.getPendingRegistrationsByClinic = async (req, res) => {
   try {
     // Get clinicId from params and ensure it's a string
     let clinicId = req.params?.clinicId;
-    
+
     // If clinicId is an object, extract the string value
     if (clinicId && typeof clinicId === 'object') {
       console.log('Warning: clinicId is an object, extracting string value');
@@ -275,21 +292,24 @@ exports.getPendingRegistrationsByClinic = async (req, res) => {
     }
 
     if (!clinicId) {
-      // Try to get clinicId from veterinarian record
+      // Try to get clinicId from veterinarian or staff record
       if (req.user?.role === 'vet') {
-        const veterinarian = await Veterinarian.findOne({
-          email: req.user.email
-        });
-
-        if (veterinarian && veterinarian.clinicId) {
-          clinicId = veterinarian.clinicId.toString();
+        const veterinarian = await Veterinarian.findOne({ email: req.user.email });
+        if (veterinarian && veterinarian.currentActiveClinicId) {
+          clinicId = veterinarian.currentActiveClinicId.toString();
+        } else {
+          // Fallback to ClinicStaff if not found as Veterinarian
+          const staff = await ClinicStaff.findOne({ email: req.user.email });
+          if (staff && staff.clinicId) {
+            clinicId = staff.clinicId.toString();
+          }
         }
       }
     }
 
     if (!clinicId) {
-      return res.status(400).json({ 
-        message: 'Clinic ID not found. Please ensure you are associated with a clinic.' 
+      return res.status(400).json({
+        message: 'Clinic ID not found. Please ensure you are associated with a clinic.'
       });
     }
 
@@ -302,9 +322,12 @@ exports.getPendingRegistrationsByClinic = async (req, res) => {
       return res.status(404).json({ message: 'Clinic not found' });
     }
 
+    const { status } = req.query;
+    const registrationStatus = status || 'Pending';
+
     const pets = await PetProfile.find({
       registeredClinicId: clinicId,
-      registrationStatus: 'Pending',
+      registrationStatus: registrationStatus,
       isDeleted: { $ne: true }
     })
       .populate('ownerId', 'firstName lastName email phoneNumber')
@@ -344,8 +367,8 @@ exports.getPendingRegistrationsByVet = async (req, res) => {
 
     const clinicId = veterinarian.clinicId;
     if (!clinicId) {
-      return res.status(400).json({ 
-        message: 'Veterinarian is not associated with any clinic' 
+      return res.status(400).json({
+        message: 'Veterinarian is not associated with any clinic'
       });
     }
 
@@ -380,7 +403,7 @@ exports.getApprovedRegistrationsByClinic = async (req, res) => {
   try {
     // Get clinicId and ensure it's a string
     let { clinicId } = req.params;
-    
+
     // If clinicId is an object, extract the string value
     if (clinicId && typeof clinicId === 'object') {
       console.log('Warning: clinicId is an object in getApprovedRegistrationsByClinic, converting to string');
@@ -427,41 +450,37 @@ exports.getRegisteredPetsCountByClinic = async (req, res) => {
   try {
     const { clinicId } = req.params;
 
-    if (!req.user || req.user.role !== 'vet') {
+    const isVetRole = req.user.role === 'vet';
+    const isExplicitStaff = req.user.role === 'staff' || req.user.role === 'staffMember';
+
+    if (!req.user || (!isVetRole && !isExplicitStaff)) {
       return res.status(403).json({
-        message: 'Access denied: Only veterinarians can access this data'
+        message: 'Access denied: Only clinic staff and veterinarians can access this data'
       });
     }
 
-    // Get vet
-    const vet = await Veterinarian.findById(req.user.id);
-    
-    if (!vet) {
-      return res.status(404).json({
-        message: 'Veterinarian not found'
-      });
-    }
-
-    // Check if vet has access to this clinic
     let hasAccess = false;
-    
-    // Check currentActiveClinicId (single clinic)
-    if (vet.currentActiveClinicId && vet.currentActiveClinicId.toString() === clinicId) {
-      hasAccess = true;
-    }
-    // Check clinicId (could be array or single)
-    else if (vet.clinicId) {
-      if (Array.isArray(vet.clinicId)) {
-        // Array of clinics - check if clinicId is in the array
-        hasAccess = vet.clinicId.some(id => id.toString() === clinicId);
-      } else {
-        // Single clinic
-        hasAccess = vet.clinicId.toString() === clinicId;
+
+    // Try finding in Veterinarian first
+    const vet = await Veterinarian.findById(req.user.id);
+    if (vet) {
+      if (vet.currentActiveClinicId && vet.currentActiveClinicId.toString() === clinicId) {
+        hasAccess = true;
+      } else if (vet.clinicId && vet.clinicId.toString() === clinicId) {
+        hasAccess = true;
+      } else if (vet.ownedClinics && vet.ownedClinics.some(id => id.toString() === clinicId)) {
+        hasAccess = true;
       }
-    }
-    // Check ownedClinics (if vet owns clinics)
-    else if (vet.ownedClinics && Array.isArray(vet.ownedClinics)) {
-      hasAccess = vet.ownedClinics.some(id => id.toString() === clinicId);
+    } else {
+      // Try finding in ClinicStaff
+      const staff = await ClinicStaff.findById(req.user.id);
+      if (staff) {
+        if (staff.clinicId && staff.clinicId.toString() === clinicId) {
+          hasAccess = true;
+        } else if (staff.assignedClinics && staff.assignedClinics.some(id => id.toString() === clinicId)) {
+          hasAccess = true;
+        }
+      }
     }
 
     if (!hasAccess) {
@@ -504,18 +523,32 @@ exports.getPendingRegistrationsCountByClinic = async (req, res) => {
   try {
     const { clinicId } = req.params;
 
-    // === Security: Only allow vets from this clinic ===
-    if (!req.user || req.user.role !== 'vet') {
+    const isStaff = req.user.role === 'staff' || req.user.role === 'staffMember';
+    const isVet = req.user.role === 'vet';
+
+    if (!req.user || (!isVet && !isStaff)) {
       return res.status(403).json({
-        message: 'Access denied: Only veterinarians can access this data'
+        message: 'Access denied: Only clinic staff and veterinarians can access this data'
       });
     }
 
-    const vet = await Veterinarian.findById(req.user.id);
-    if (!vet || !vet.clinicId || vet.clinicId.toString() !== clinicId) {
-      return res.status(403).json({
-        message: 'You do not have permission to view stats for this clinic'
-      });
+    const isEnhanced = req.user.accessLevel === 'Enhanced';
+
+    if (!isEnhanced) {
+      let userClinicId = null;
+      const vet = await Veterinarian.findById(req.user.id);
+      if (vet) {
+        userClinicId = vet.clinicId || vet.currentActiveClinicId;
+      } else {
+        const staff = await ClinicStaff.findById(req.user.id);
+        userClinicId = staff?.clinicId;
+      }
+
+      if (userClinicId && userClinicId.toString() !== clinicId) {
+        return res.status(403).json({
+          message: 'You do not have permission to view stats for this clinic'
+        });
+      }
     }
 
     // Optional: Verify clinic exists
@@ -546,39 +579,20 @@ exports.getPendingRegistrationsCountByClinic = async (req, res) => {
   }
 };
 
-// In petProfileController.js - Update approvePetRegistration
 exports.approvePetRegistration = async (req, res) => {
   try {
     const { id } = req.params; // petId
 
-    // First, get the veterinarian to get their clinic
-    const veterinarian = await Veterinarian.findOne({
-      email: req.user.email
-    });
-
-    if (!veterinarian) {
-      return res.status(404).json({ message: 'Veterinarian not found' });
-    }
-
-    // Get vet's active clinic
-    const vetClinicId = veterinarian.currentActiveClinicId || veterinarian.clinicId;
-    if (!vetClinicId) {
-      return res.status(400).json({ 
-        message: 'Veterinarian is not associated with any clinic' 
-      });
-    }
-
-    // Find pet that's pending registration at this clinic
+    // Find the pet that's pending registration
     const pet = await PetProfile.findOne({
       _id: id,
-      registeredClinicId: vetClinicId,
       registrationStatus: 'Pending'
     });
 
     if (!pet) {
-      console.error('Pet not found or not pending in this clinic');
+      console.error('Pet not found or not pending registration');
       return res.status(404).json({
-        message: 'Pet not found or not pending registration in your clinic'
+        message: 'Pet not found or not pending registration'
       });
     }
 
@@ -586,7 +600,7 @@ exports.approvePetRegistration = async (req, res) => {
     pet.registrationStatus = 'Approved';
     pet.registrationApprovedAt = new Date();
     pet.registrationApprovedBy = req.user.id;
-    
+
     await pet.save();
 
     // Populate for response
@@ -608,39 +622,20 @@ exports.approvePetRegistration = async (req, res) => {
   }
 };
 
-// Update rejectPetRegistration
 exports.rejectPetRegistration = async (req, res) => {
   try {
     const { id } = req.params; // petId
-    const { reason } = req.body; // Optional rejection reason
-
-    // Get veterinarian
-    const veterinarian = await Veterinarian.findOne({
-      email: req.user.email
-    });
-
-    if (!veterinarian) {
-      return res.status(404).json({ message: 'Veterinarian not found' });
-    }
-
-    // Get vet's clinic
-    const vetClinicId = veterinarian.currentActiveClinicId || veterinarian.clinicId;
-    if (!vetClinicId) {
-      return res.status(400).json({ 
-        message: 'Veterinarian is not associated with any clinic' 
-      });
-    }
+    const { reason } = req.body || {}; // Optional rejection reason
 
     // Find the pet
     const pet = await PetProfile.findOne({
       _id: id,
-      registeredClinicId: vetClinicId,
       registrationStatus: 'Pending'
     });
 
     if (!pet) {
       return res.status(404).json({
-        message: 'Pet not found or not pending registration in your clinic'
+        message: 'Pet not found or not pending registration'
       });
     }
 
@@ -648,7 +643,7 @@ exports.rejectPetRegistration = async (req, res) => {
     pet.registrationStatus = 'Rejected';
     pet.registrationRejectedAt = new Date();
     pet.registrationRejectedBy = req.user.id;
-    
+
     if (reason && reason.trim()) {
       pet.rejectionReason = reason.trim();
     }
@@ -685,42 +680,24 @@ exports.getRegisteredPetsForVetClinic = async (req, res) => {
       });
     }
 
-    // Get veterinarian
-    const veterinarian = await Veterinarian.findOne({
-      email: req.user.email
-    });
+    // 1. Determine Access Level
+    const isEnhanced = req.user.accessLevel === 'Enhanced';
 
-    if (!veterinarian) {
-      return res.status(404).json({
-        success: false,
-        message: 'Veterinarian not found'
-      });
-    }
-
-    // Get vet's active clinic
-    const vetClinicId = veterinarian.currentActiveClinicId || veterinarian.clinicId;
-    if (!vetClinicId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Veterinarian is not associated with any clinic'
-      });
-    }
-
-    // Get clinic info
-    const clinic = await Clinic.findById(vetClinicId);
-    if (!clinic) {
-      return res.status(404).json({
-        success: false,
-        message: 'Clinic not found'
-      });
-    }
-
-    // Get approved pets for this clinic
-    const registeredPets = await PetProfile.find({
-      registeredClinicId: vetClinicId,
+    let query = {
       registrationStatus: 'Approved',
       isDeleted: { $ne: true }
-    })
+    };
+
+    // If Basic Access, only show pets for their assigned clinic
+    if (!isEnhanced) {
+      if (!req.user.clinicId) {
+        return res.status(200).json({ success: true, count: 0, registeredPets: [], isGlobalView: false });
+      }
+      query.registeredClinicId = req.user.clinicId;
+    }
+
+    // 2. Fetch approved pets
+    const registeredPets = await PetProfile.find(query)
       .populate('ownerId', 'firstName lastName email phoneNumber')
       .populate('registeredClinicId', 'name address phoneNumber')
       .sort({ registrationApprovedAt: -1, name: 1 });
@@ -729,11 +706,7 @@ exports.getRegisteredPetsForVetClinic = async (req, res) => {
       success: true,
       count: registeredPets.length,
       registeredPets: registeredPets,
-      clinicInfo: {
-        id: clinic._id,
-        name: clinic.name,
-        address: clinic.address
-      }
+      isGlobalView: isEnhanced
     });
 
   } catch (error) {
@@ -746,7 +719,7 @@ exports.getRegisteredPetsForVetClinic = async (req, res) => {
   }
 };
 
-// Alternative: Get registered pets by clinic ID (for primary vets)
+// Alternative: Get registered pets by clinic ID (for Enhanced vets)
 exports.getRegisteredPetsByClinic = async (req, res) => {
   try {
     const { clinicId } = req.params;

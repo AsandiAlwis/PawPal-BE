@@ -23,9 +23,9 @@ exports.createPrescription = async (req, res) => {
       });
     }
 
-    if (!['Medication', 'Vaccination'].includes(type)) {
+    if (!type) {
       return res.status(400).json({
-        message: 'type must be "Medication" or "Vaccination"'
+        message: 'type is required'
       });
     }
 
@@ -121,8 +121,9 @@ exports.getPrescriptionsByPet = async (req, res) => {
           select: 'firstName lastName'
         }
       })
+      .populate('createdBy', 'firstName lastName')
       .sort({ createdAt: -1 }) // Most recent first — consistent and expected
-      // Alternative: .sort({ dueDate: 1 }) for upcoming first
+    // Alternative: .sort({ dueDate: 1 }) for upcoming first
 
     res.status(200).json({
       count: prescriptions.length,
@@ -242,7 +243,7 @@ exports.updatePrescription = async (req, res) => {
       return res.status(400).json({ message: 'Cannot change associated pet' });
     }
 
-    if (updates.type && !['Medication', 'Vaccination'].includes(updates.type)) {
+    if (updates.type && !updates.type) {
       return res.status(400).json({ message: 'Invalid type' });
     }
 
@@ -324,19 +325,28 @@ exports.getVaccinationSummary = async (req, res) => {
   }
 };
 
-// Generate and stream PDF prescription
+// Generate and stream PDF prescription report for multiple prescriptions
 exports.generatePrescriptionPDF = async (req, res) => {
   try {
     const { id } = req.params;
+    const reportType = req.query.reportType || 'prescription'; // 'prescription' or 'vaccination'
+    const isVaccinationReport = reportType === 'vaccination';
 
-    const prescription = await Prescription.findById(id)
+    // Find all prescriptions for this medical record
+    const prescriptions = await Prescription.find({ medicalRecordId: id, isDeleted: { $ne: true } })
       .populate({
         path: 'petId',
-        select: 'name species breed dateOfBirth photo ownerId',
-        populate: {
-          path: 'ownerId',
-          select: 'firstName lastName phoneNumber email'
-        }
+        select: 'name species breed dateOfBirth photo ownerId registeredClinicId',
+        populate: [
+          {
+            path: 'ownerId',
+            select: 'firstName lastName phoneNumber email'
+          },
+          {
+            path: 'registeredClinicId',
+            select: 'name address phoneNumber'
+          }
+        ]
       })
       .populate({
         path: 'medicalRecordId',
@@ -347,88 +357,226 @@ exports.generatePrescriptionPDF = async (req, res) => {
         }
       });
 
-    if (!prescription) {
-      return res.status(404).json({ message: 'Prescription not found' });
+    // Fallback: If no prescriptions found for medicalRecordId, try finding by ID as fallback for single prescription
+    let finalPrescriptions = prescriptions;
+    if (prescriptions.length === 0) {
+      const singlePres = await Prescription.findById(id)
+        .populate({
+          path: 'petId',
+          select: 'name species breed dateOfBirth photo ownerId registeredClinicId',
+          populate: [
+            {
+              path: 'ownerId',
+              select: 'firstName lastName phoneNumber email'
+            },
+            {
+              path: 'registeredClinicId',
+              select: 'name address phoneNumber'
+            }
+          ]
+        })
+        .populate({
+          path: 'medicalRecordId',
+          select: 'date diagnosis vetId',
+          populate: {
+            path: 'vetId',
+            select: 'firstName lastName'
+          }
+        });
+      if (!singlePres) {
+        return res.status(404).json({ message: 'No prescriptions found for this record' });
+      }
+      finalPrescriptions = [singlePres];
     }
 
-    const pet = prescription.petId;
+    const firstPres = finalPrescriptions[0];
+    const pet = firstPres.petId;
     if (!pet) {
       return res.status(404).json({ message: 'Associated pet not found' });
     }
 
-    // Install required package: npm install pdfkit
     const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
 
-    // Set headers for download
+    const reportLabel = isVaccinationReport ? 'Vaccination_Report' : 'Prescription_Report';
+    const filename = `${reportLabel}_${pet.name}_${new Date().toISOString().slice(0, 10)}.pdf`;
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="Prescription_${pet.name}_${prescription.medicationName.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().slice(0,10)}.pdf"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
     doc.pipe(res);
 
-    // Header
-    doc.fontSize(24).text('Veterinary Prescription', { align: 'center' });
-    doc.moveDown(2);
+    // Color Palette — purple for vaccination, green for prescription
+    const primaryColor = isVaccinationReport ? '#7b1fa2' : '#2e7d32';
 
-    // Pet Info
-    doc.fontSize(16).text('Pet Information', { underline: true });
-    doc.fontSize(12)
-      .text(`Name: ${pet.name}`)
-      .text(`Species: ${pet.species}`)
-      .text(`Breed: ${pet.breed || 'Not specified'}`)
-      .text(`Date of Birth: ${pet.dateOfBirth ? new Date(pet.dateOfBirth).toLocaleDateString() : 'Unknown'}`)
-      .moveDown();
+    // --- Header Section ---
+    doc.rect(0, 0, 612, 120).fill(primaryColor);
+    doc.fillColor('#ffffff')
+      .fontSize(26)
+      .font('Helvetica-Bold')
+      .text(isVaccinationReport ? 'PAWPAL - VACCINATION REPORT' : 'PAWPAL - PRESCRIPTION REPORT', 50, 45);
 
-    // Owner Info
-    if (pet.ownerId) {
-      doc.fontSize(16).text('Owner Information', { underline: true });
-      doc.fontSize(12)
-        .text(`Name: ${pet.ownerId.firstName} ${pet.ownerId.lastName}`)
-        .text(`Phone: ${pet.ownerId.phoneNumber || 'Not provided'}`)
-        .text(`Email: ${pet.ownerId.email || 'Not provided'}`)
-        .moveDown();
-    }
-
-    // Issuing Vet (if from medical record)
-    if (prescription.medicalRecordId && prescription.medicalRecordId.vetId) {
-      doc.text(`Issued by: Dr. ${prescription.medicalRecordId.vetId.firstName} ${prescription.medicalRecordId.vetId.lastName}`);
-      doc.moveDown();
-    }
-
-    // Prescription Details
-    doc.fontSize(18).text('Prescription Details', { underline: true });
-    doc.moveDown(0.5);
-
-    const details = [
-      { label: 'Type', value: prescription.type },
-      { label: 'Medication/Vaccine', value: prescription.medicationName },
-      { label: 'Dosage', value: prescription.dosage },
-      { label: 'Duration', value: prescription.duration || 'N/A' },
-      { label: 'Due Date / Next Booster', value: prescription.dueDate ? new Date(prescription.dueDate).toLocaleDateString() : 'N/A' },
-    ];
-
-    details.forEach(item => {
-      doc.fontSize(14).text(`${item.label}:`, { continued: true });
-      doc.fontSize(14).text(` ${item.value}`, { align: 'left' });
-    });
-
-    doc.moveDown(2);
-
-    // Instructions
-    doc.fontSize(16).text('Instructions', { underline: true });
-    doc.fontSize(12).text(
-      prescription.instructions || 'No specific instructions provided.',
-      { align: 'justify' }
-    );
-
-    // Footer
-    doc.moveDown(4);
     doc.fontSize(10)
-      .text(`Issued on: ${new Date().toLocaleDateString()}`, { align: 'center' })
-      .text('This is an official veterinary prescription.', { align: 'center' });
+      .font('Helvetica')
+      .text(isVaccinationReport ? 'OFFICIAL VETERINARY VACCINATION RECORD' : 'OFFICIAL VETERINARY MEDICAL RECORD', 50, 80);
+
+    // --- Pet & Owner Info ---
+    doc.fillColor('#000000').moveDown(6);
+    const startY = 160;
+    doc.fontSize(14).font('Helvetica-Bold').fillColor(primaryColor).text('PET INFORMATION', 50, startY);
+    doc.fontSize(14).font('Helvetica-Bold').text('OWNER INFORMATION', 320, startY);
+
+    doc.rect(50, startY + 20, 240, 1).fill(primaryColor);
+    doc.rect(320, startY + 20, 240, 1).fill(primaryColor);
+
+    doc.fillColor('#333333').fontSize(11).font('Helvetica').moveDown(1.5);
+
+    let currentY = startY + 35;
+    doc.text(`Name`, 50, currentY);
+    doc.font('Helvetica-Bold').text(`: ${pet.name}`, 110, currentY);
+
+    doc.font('Helvetica').text(`Species`, 50, currentY + 18);
+    doc.font('Helvetica-Bold').text(`: ${pet.species}`, 110, currentY + 18);
+
+    doc.font('Helvetica').text(`Breed`, 50, currentY + 36);
+    doc.font('Helvetica-Bold').text(`: ${pet.breed || 'N/A'}`, 110, currentY + 36);
+
+    doc.font('Helvetica').text(`DOB`, 50, currentY + 54);
+    doc.font('Helvetica-Bold').text(`: ${pet.dateOfBirth ? new Date(pet.dateOfBirth).toLocaleDateString() : 'N/A'}`, 110, currentY + 54);
+
+    if (pet.ownerId) {
+      doc.font('Helvetica').text(`Name`, 320, currentY);
+      doc.font('Helvetica-Bold').text(`: ${pet.ownerId.firstName} ${pet.ownerId.lastName}`, 380, currentY);
+
+      doc.font('Helvetica').text(`Phone`, 320, currentY + 18);
+      doc.font('Helvetica-Bold').text(`: ${pet.ownerId.phoneNumber || 'N/A'}`, 380, currentY + 18);
+
+      doc.font('Helvetica').text(`Email`, 320, currentY + 36);
+      doc.font('Helvetica-Bold').text(`: ${pet.ownerId.email || 'N/A'}`, 380, currentY + 36);
+    }
+
+    // --- Clinical Context ---
+    doc.moveDown(6);
+    const middleY = doc.y;
+    doc.fontSize(14).font('Helvetica-Bold').fillColor(primaryColor).text('CLINICAL CONTEXT', 50, middleY);
+    doc.rect(50, middleY + 20, 510, 1).fill(primaryColor);
+
+    doc.fillColor('#333333').fontSize(11).font('Helvetica').moveDown(2.5);
+
+    // Build clinical context rows dynamically
+    const clinic = pet.registeredClinicId;
+    let clinicalY = middleY + 35;
+    const labelX = 50;
+    const valueX = 200;
+    const rowH = 18;
+
+    if (firstPres.medicalRecordId && firstPres.medicalRecordId.vetId) {
+      doc.font('Helvetica-Bold').text('Attending Veterinarian:', labelX, clinicalY);
+      doc.font('Helvetica').text(`Dr. ${firstPres.medicalRecordId.vetId.firstName} ${firstPres.medicalRecordId.vetId.lastName}`, valueX, clinicalY);
+      clinicalY += rowH;
+    }
+
+    if (clinic) {
+      doc.font('Helvetica-Bold').text('Clinic Name:', labelX, clinicalY);
+      doc.font('Helvetica').text(clinic.name || 'N/A', valueX, clinicalY);
+      clinicalY += rowH;
+
+      doc.font('Helvetica-Bold').text('Clinic Address:', labelX, clinicalY);
+      const cleanAddress = (clinic.address || 'N/A').replace(/\r?\n|\r/g, ', ');
+      doc.font('Helvetica').text(cleanAddress, valueX, clinicalY, { lineBreak: false });
+      clinicalY += rowH;
+
+      doc.font('Helvetica-Bold').text('Contact Number:', labelX, clinicalY);
+      doc.font('Helvetica').text(clinic.phoneNumber || 'N/A', valueX, clinicalY);
+      clinicalY += rowH;
+    }
+
+    doc.font('Helvetica-Bold').text('Date Issued:', labelX, clinicalY);
+    doc.font('Helvetica').text(new Date(firstPres.createdAt).toLocaleDateString(), valueX, clinicalY);
+
+    // --- Render Section based on report type ---
+    if (isVaccinationReport) {
+      // For vaccination reports — all items are vaccinations (type !== 'Medication')
+      const vaccinationItems = finalPrescriptions.filter(p => p.type !== 'Medication');
+      const allItems = vaccinationItems.length > 0 ? vaccinationItems : finalPrescriptions;
+
+      doc.moveDown(4);
+      doc.fontSize(16).font('Helvetica-Bold').fillColor(primaryColor).text('VACCINATIONS', 50);
+      doc.rect(50, doc.y + 2, 510, 2).fill(primaryColor);
+      doc.moveDown(1);
+
+      allItems.forEach((pres, index) => {
+        if (doc.y > 700) doc.addPage();
+
+        doc.fillColor('#000000').fontSize(12).font('Helvetica-Bold').text(`${index + 1}. ${pres.medicationName}`);
+        doc.fontSize(10).font('Helvetica').fillColor('#444444')
+          .text(`Vaccine Type  : ${pres.type}`, 70)
+          .text(`Dosage        : ${pres.dosage || 'N/A'}`, 70)
+          .text(`Next Due Date : ${pres.dueDate ? new Date(pres.dueDate).toLocaleDateString() : 'N/A'}`, 70)
+          .text(`Instructions  : ${pres.instructions || 'Follow as directed.'}`, 70);
+
+        doc.moveDown(1);
+        doc.rect(70, doc.y, 450, 0.5).fill('#eeeeee');
+        doc.moveDown(1);
+      });
+
+    } else {
+      // For prescription reports — split into medications and vaccinations
+      const medications = finalPrescriptions.filter(p => p.type === 'Medication');
+      const vaccinations = finalPrescriptions.filter(p => p.type !== 'Medication');
+
+      // --- Render Medications ---
+      if (medications.length > 0) {
+        doc.moveDown(4);
+        doc.fontSize(16).font('Helvetica-Bold').fillColor(primaryColor).text('MEDICATIONS (Rx)', 50);
+        doc.rect(50, doc.y + 2, 510, 2).fill(primaryColor);
+        doc.moveDown(1);
+
+        medications.forEach((pres, index) => {
+          if (doc.y > 700) doc.addPage();
+
+          doc.fillColor('#000000').fontSize(12).font('Helvetica-Bold').text(`${index + 1}. ${pres.medicationName}`);
+          doc.fontSize(10).font('Helvetica').fillColor('#444444')
+            .text(`Dosage: ${pres.dosage}`, 70)
+            .text(`Duration: ${pres.duration || 'As directed'}`, 70)
+            .text(`Instructions: ${pres.instructions || 'Follow as directed.'}`, 70);
+
+          doc.moveDown(1);
+          doc.rect(70, doc.y, 450, 0.5).fill('#eeeeee');
+          doc.moveDown(1);
+        });
+      }
+
+      // --- Render Vaccinations (in prescription report) ---
+      if (vaccinations.length > 0) {
+        doc.moveDown(2);
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#7b1fa2').text('VACCINATIONS', 50);
+        doc.rect(50, doc.y + 2, 510, 2).fill('#7b1fa2');
+        doc.moveDown(1);
+
+        vaccinations.forEach((pres, index) => {
+          if (doc.y > 700) doc.addPage();
+
+          doc.fillColor('#000000').fontSize(12).font('Helvetica-Bold').text(`${index + 1}. ${pres.medicationName}`);
+          doc.fontSize(10).font('Helvetica').fillColor('#444444')
+            .text(`Type: ${pres.type}`, 70)
+            .text(`Next Due Date: ${pres.dueDate ? new Date(pres.dueDate).toLocaleDateString() : 'N/A'}`, 70, doc.y, { continued: false });
+
+          doc.moveDown(1);
+          doc.rect(70, doc.y, 450, 0.5).fill('#eeeeee');
+          doc.moveDown(1);
+        });
+      }
+    }
+
+    // --- Footer ---
+    const footerY = 750;
+    doc.rect(0, 800, 612, 42).fill(primaryColor);
+    doc.fillColor('#999999').fontSize(9).font('Helvetica')
+      .text('This document is generated by PawPal (PetCare-2025). Follow all veterinary instructions.', 50, footerY, { align: 'center' })
+      .moveDown(0.5)
+      .fontSize(8)
+      .text(`Report Generated On: ${new Date().toLocaleString()}`, { align: 'center' });
 
     doc.end();
 

@@ -28,7 +28,7 @@ const upload = multer({
 router.post(
   '/attachments',
   protect,
-  authorize('vet'),
+  authorize('vet', 'owner'),
   upload.array('files', 10),
   async (req, res) => {
     try {

@@ -6,7 +6,8 @@ const chatMessageSchema = new mongoose.Schema({
   senderType: { type: String, enum: ['Owner', 'Vet'], required: true },
   content: { type: String, required: true },
   timestamp: { type: Date, default: Date.now },
-  attachments: [{ type: String }] // Array of URLs
+  attachments: [{ type: String }], // Array of URLs
+  isRead: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('ChatMessage', chatMessageSchema);

@@ -16,25 +16,30 @@ const PetProfile = require('../models/PetProfile');
 const authorizePetChat = async (req, res, next) => {
   try {
     const { petId } = req.params;
-    const pet = await PetProfile.findById(petId)
-      .populate('registeredClinicId');
+    const pet = await PetProfile.findById(petId).populate('registeredClinicId');
 
     if (!pet) {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    const isOwner = req.user.role === 'owner' && pet.ownerId.toString() === req.user.id;
-    const isVetFromClinic = req.user.role === 'vet' &&
-      pet.registeredClinicId &&
-      pet.registeredClinicId._id.toString() === req.user.clinicId;
+    // Owner: must be this pet's owner
+    const isOwner = req.user.role === 'owner' &&
+      pet.ownerId.toString() === req.user.id.toString();
 
-    if (!isOwner && !isVetFromClinic) {
+    // Vet: Enhanced vets can access any pet; other vets must match the pet's clinic
+    const isEnhancedVet = req.user.role === 'vet' && req.user.accessLevel === 'Enhanced';
+    const isClinicVet = req.user.role === 'vet' && (
+      !pet.registeredClinicId || // pet has no clinic assignment yet — allow
+      !req.user.clinicId ||      // vet has no clinic yet — allow (edge case)
+      pet.registeredClinicId._id.toString() === req.user.clinicId.toString()
+    );
+
+    if (!isOwner && !isEnhancedVet && !isClinicVet) {
       return res.status(403).json({
         message: 'Not authorized to access chat for this pet'
       });
     }
 
-    // Attach pet for potential use in controller
     req.pet = pet;
     next();
   } catch (error) {

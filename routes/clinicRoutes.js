@@ -10,13 +10,14 @@ const {
   searchClinics,
   getAllClinics,
   getMyClinic,
-  getClinicStaff,   
+  getClinicStaff,
   addClinicStaff,
   getClinicStaffCount,
   getClinicStaffById,
   updateClinicStaff,
   deactivateClinicStaff,
-  activateClinicStaff
+  activateClinicStaff,
+  deleteClinicStaff
 } = require('../controllers/clinicController');
 
 const { protect, authorize, authorizeVetAccess } = require('../middleware/auth');
@@ -30,13 +31,13 @@ router.get('/', getAllClinics);
 router.get('/my', protect, getMyClinic);
 
 // STAFF ROUTES - MUST COME BEFORE /:id !!!
-router.get('/staff', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), getClinicStaff);
-router.post('/staff', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), addClinicStaff);
+router.get('/staff', protect, authorize('vet'), authorizeVetAccess('Enhanced'), getClinicStaff);
+router.post('/staff', protect, authorize('vet'), authorizeVetAccess('Enhanced'), addClinicStaff);
 
 // === Clinic CRUD - :id routes LAST ===
 router.get('/:id', getClinicById);                    // Now only matches real ObjectIds
 router.put('/:id', protect, updateClinic);
-router.delete('/:id', protect, authorize('vet'), authorizeVetAccess('Primary'), deleteClinic);
+router.delete('/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), deleteClinic);
 
 router.post('/', protect, authorize('vet'), createClinic);
 
@@ -47,9 +48,10 @@ router.get(
   getClinicStaffCount
 );
 
-router.get('/staff/:id', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), getClinicStaffById);
-router.put('/staff/:id', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), updateClinicStaff);
-router.patch('/staff/:id/deactivate', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), deactivateClinicStaff);
-router.patch('/staff/:id/activate', protect, authorize('vet'), authorizeVetAccess('Primary', 'Full Access'), activateClinicStaff);
+router.get('/staff/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), getClinicStaffById);
+router.put('/staff/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), updateClinicStaff);
+router.patch('/staff/:id/deactivate', protect, authorize('vet'), authorizeVetAccess('Enhanced'), deactivateClinicStaff);
+router.patch('/staff/:id/activate', protect, authorize('vet'), authorizeVetAccess('Enhanced'), activateClinicStaff);
+router.delete('/staff/:id', protect, authorize('vet'), authorizeVetAccess('Enhanced'), deleteClinicStaff);
 
 module.exports = router;

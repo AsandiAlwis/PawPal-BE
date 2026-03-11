@@ -12,9 +12,12 @@ const {
   getMyClinics,
   createClinic,
   switchActiveClinic,
-  getStaffByPrimaryVet,
+  getStaffByEnhancedVet,
   deleteVet,
-  deleteClinicStaff
+  deleteClinicStaff,
+  getVetNotifications,
+  getAllVets,
+  markNotificationAsRead
 } = require('../controllers/veterinarianController');  // Ensure this path is correct
 
 // Import middleware
@@ -27,8 +30,17 @@ router.post('/register', registerVet);
 // === All routes below require authentication ===
 router.use(protect);
 
-// Get all staff from all clinics owned by the primary vet
-router.get('/clinics/staff',  getStaffByPrimaryVet);
+// Get all staff from all clinics owned by the Enhanced vet
+router.get('/clinics/staff', getStaffByEnhancedVet);
+
+// Get all active veterinarians (for public booking)
+router.get('/all-vets', getAllVets);
+
+// Get vet notifications
+router.get('/notifications', getVetNotifications);
+
+// Mark notification as read
+router.patch('/notifications/:type/:id/read', markNotificationAsRead);
 
 // Get logged-in vet's clinics
 router.get('/my-clinics', (req, res) => {
@@ -41,51 +53,64 @@ router.get('/my-clinics', (req, res) => {
   getMyClinics(req, res);
 });
 
-// Create a new clinic (Primary Vet only)
-router.post('/clinics', authorizeVetAccess('Primary'), createClinic);
+// Create a new clinic (Enhanced Vet only)
+router.post('/clinics', authorizeVetAccess('Enhanced'), createClinic);
 
-// Switch active clinic (Primary Vet only)
-router.post('/switch-clinic', authorizeVetAccess('Primary'), switchActiveClinic);
+// Switch active clinic (Enhanced Vet only)
+router.post('/switch-clinic', authorizeVetAccess('Enhanced'), switchActiveClinic);
 
 // View own profile or any vet profile (useful for clinic directory)
 router.get('/:id', getVetById);
 
-// Update own profile only
-router.put('/:id', (req, res) => {
-  if (req.params.id === req.user.id) {
+// Update profile (self or authorized management)
+router.put('/:id', async (req, res) => {
+  try {
+    const requesterId = req.user.id;
+    const targetId = req.params.id;
+
+    if (requesterId === targetId) {
+      return updateVet(req, res);
+    }
+
+    const requester = await Veterinarian.findById(requesterId);
+    if (!requester || requester.accessLevel !== 'Enhanced') {
+      return res.status(403).json({
+        message: 'Only Enhanced veterinarians can update other profiles'
+      });
+    }
+
     return updateVet(req, res);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  return res.status(403).json({
-    message: 'You can only update your own profile'
-  });
 });
 
 // Get all vets in a clinic
 router.get('/clinic/:clinicId', getVetsByClinic);
 
-// Create sub-account (Primary or Full Access only)
-router.post('/sub-account', authorizeVetAccess('Primary', 'Full Access'), createSubAccount);
+// Create sub-account (Enhanced only)
+router.post('/sub-account', authorizeVetAccess('Enhanced'), createSubAccount);
 
-// Get clinic staff stats (Primary or Full Access only)
-router.get('/clinic/:clinicId/stats', authorizeVetAccess('Primary', 'Full Access'), async (req, res) => {
+// Get clinic staff stats (Enhanced only)
+router.get('/clinic/:clinicId/stats', authorizeVetAccess('Enhanced'), async (req, res) => {
   const userId = req.user.id;
   const user = await Veterinarian.findById(userId);
-  
+
   if (!user) {
     return res.status(404).json({ message: 'User not found' });
   }
 
   // Check if user has access to this clinic
   let hasAccess = false;
-  if (user.accessLevel === 'Primary') {
-    // Primary vets must own the clinic
-    hasAccess = user.ownedClinics && user.ownedClinics.some(clinicId => 
+  if (user.accessLevel === 'Enhanced') {
+    // Enhanced vets can see stats for clinics they own OR their current active clinic
+    const ownsClinic = user.ownedClinics && user.ownedClinics.some(clinicId =>
       clinicId.toString() === req.params.clinicId
     );
-  } else if (user.accessLevel === 'Full Access') {
-    // Full Access vets must have it as current active clinic
-    hasAccess = user.currentActiveClinicId && 
-                user.currentActiveClinicId.toString() === req.params.clinicId;
+    const isActiveClinic = user.currentActiveClinicId &&
+      user.currentActiveClinicId.toString() === req.params.clinicId;
+
+    hasAccess = ownsClinic || isActiveClinic;
   }
 
   if (!hasAccess) {
@@ -97,8 +122,8 @@ router.get('/clinic/:clinicId/stats', authorizeVetAccess('Primary', 'Full Access
   getClinicStaffStats(req, res);
 });
 
-// Deactivate a vet account (Primary Vet only)
-router.patch('/:id/deactivate', authorizeVetAccess('Primary'), async (req, res) => {
+// Deactivate a vet account (Enhanced Vet only)
+router.patch('/:id/deactivate', authorizeVetAccess('Enhanced'), async (req, res) => {
   // Prevent self-deactivation
   if (req.params.id === req.user.id) {
     return res.status(400).json({
@@ -123,16 +148,18 @@ router.patch('/:id/deactivate', authorizeVetAccess('Primary'), async (req, res) 
 
   // Check if target vet is in requester's clinic(s)
   let hasPermission = false;
-  
-  if (requester.accessLevel === 'Primary') {
-    // Primary vets can deactivate vets from clinics they own
-    if (targetVet.currentActiveClinicId) {
-      // Check if requester owns the clinic where target vet is active
-      hasPermission = requester.ownedClinics && 
-                     requester.ownedClinics.some(clinicId => 
-                       clinicId.toString() === targetVet.currentActiveClinicId.toString()
-                     );
-    }
+
+  if (requester.accessLevel === 'Enhanced') {
+    // Enhanced vets can deactivate vets from clinics they own OR their current clinic
+    const isTargetInOwnedClinic = targetVet.currentActiveClinicId && requester.ownedClinics &&
+      requester.ownedClinics.some(clinicId =>
+        clinicId.toString() === targetVet.currentActiveClinicId.toString()
+      );
+
+    const isTargetInCurrentClinic = targetVet.currentActiveClinicId && requester.currentActiveClinicId &&
+      targetVet.currentActiveClinicId.toString() === requester.currentActiveClinicId.toString();
+
+    hasPermission = isTargetInOwnedClinic || isTargetInCurrentClinic;
   }
 
   if (!hasPermission) {
@@ -149,14 +176,14 @@ router.get('/debug/clinic-ownership/:clinicId', protect, async (req, res) => {
   try {
     const clinicId = req.params.clinicId;
     const vetId = req.user.id;
-    
+
     const vet = await Veterinarian.findById(vetId);
     const clinic = await Clinic.findById(clinicId);
-    
-    const ownsClinic = vet.ownedClinics && vet.ownedClinics.some(id => 
+
+    const ownsClinic = vet.ownedClinics && vet.ownedClinics.some(id =>
       id.toString() === clinicId
     );
-    
+
     res.status(200).json({
       vet: {
         id: vet._id,
@@ -182,13 +209,13 @@ router.get('/debug/clinic-ownership/:clinicId', protect, async (req, res) => {
   }
 });
 
-// Delete veterinarian (Primary Vet only)
-router.delete('/:id', authorizeVetAccess('Primary'), deleteVet);
+// Delete veterinarian (Enhanced Vet only)
+router.delete('/:id', authorizeVetAccess('Enhanced'), deleteVet);
 
-// Delete clinic staff (Primary Vet only) - Add this new route
-router.delete('/clinic-staff/:id', authorizeVetAccess('Primary'), deleteClinicStaff);
+// Delete clinic staff (Enhanced Vet only) - Add this new route
+router.delete('/clinic-staff/:id', authorizeVetAccess('Enhanced'), deleteClinicStaff);
 
 // Add this route
-router.patch('/:id/activate', protect, authorizeVetAccess('Primary'), activateVet);
+router.patch('/:id/activate', protect, authorizeVetAccess('Enhanced'), activateVet);
 
 module.exports = router;

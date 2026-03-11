@@ -34,7 +34,6 @@ const prescriptionSchema = new Schema({
   },
   type: {
     type: String,
-    enum: ['Medication', 'Vaccination'],
     required: true
   },
   dueDate: {

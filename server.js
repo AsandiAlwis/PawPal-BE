@@ -8,10 +8,25 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs/promises');
+const nodemailer = require('nodemailer');
 
 dotenv.config();
 
 const app = express();
+const http = require('http');
+const { Server } = require('socket.io');
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: 'http://localhost:5173',
+    methods: ['GET', 'POST', 'PATCH', 'PUT'],
+    credentials: true
+  }
+});
+
+// Attach io to app for use in controllers
+app.set('socketio', io);
+
 const PORT = process.env.PORT || 5000;
 
 // === Cloudinary Configuration ===
@@ -26,7 +41,7 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'vet-medical-records',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'pdf'],
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'doc', 'docx', 'xls', 'xlsx'],
     resource_type: 'auto',
     transformation: [{ width: 1000, height: 1000, crop: 'limit' }],
   },
@@ -36,11 +51,18 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf'];
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/gif',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    ];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only images and PDFs are allowed.'), false);
+      cb(new Error('Invalid file type. Images, PDFs, and Office documents are allowed.'), false);
     }
   }
 });
@@ -73,6 +95,53 @@ app.use('/api/prescriptions', require('./routes/prescriptionRoutes'));
 app.use('/api/chat', require('./routes/chatMessageRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 
+// === Nodemailer Configuration ===
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+// === Contact Form API ===
+app.post('/api/contact', async (req, res) => {
+  const { name, email, phone, subject, message } = req.body;
+
+  if (!name || !email || !message) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: 'pawpal2026@gmail.com',
+    subject: `Pawpal Contact Form: ${subject || 'New Inquiry'}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: #10b981;">New Message from Pawpal Contact Us</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
+        <p><strong>Inquiry Type:</strong> ${subject}</p>
+        <p><strong>Message:</strong></p>
+        <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #10b981;">
+          ${message}
+        </div>
+        <hr style="margin-top: 20px;">
+        <p style="font-size: 0.8rem; color: #777;">This email was sent from the Pawpal Contact Us form.</p>
+      </div>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    res.status(200).json({ success: true, message: 'Email sent successfully' });
+  } catch (error) {
+    console.error('Nodemailer Error:', error);
+    res.status(500).json({ message: 'Failed to send email' });
+  }
+});
+
 // === RAG CHATBOT USING YOUR PET_DATA FOLDER ===
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:latest';
@@ -87,30 +156,30 @@ let currentOllamaModel = OLLAMA_MODEL;
 // Load all documents from pet_data folder
 async function loadPetData() {
   console.log(`📂 Loading pet knowledge from: ${PET_DATA_FOLDER}`);
-  
+
   try {
     // Check if folder exists
     await fs.access(PET_DATA_FOLDER);
     const files = await fs.readdir(PET_DATA_FOLDER);
-    
+
     if (files.length === 0) {
       console.log('⚠️ No files found in pet_data folder');
       return;
     }
-    
+
     let totalQuestions = 0;
-    
+
     // Load each file
     for (const file of files) {
       const filePath = path.join(PET_DATA_FOLDER, file);
-      
+
       try {
         if (file.endsWith('.txt')) {
           const content = await fs.readFile(filePath, 'utf-8');
-          
+
           // Split text file into chunks for better search
           const chunks = splitTextIntoChunks(content, 500);
-          
+
           chunks.forEach((chunk, index) => {
             petKnowledgeBase.push({
               id: `${file}_chunk_${index}`,
@@ -124,13 +193,13 @@ async function loadPetData() {
               }
             });
           });
-          
+
           console.log(`   ✓ Loaded: ${file} (${chunks.length} chunks)`);
-          
+
         } else if (file.endsWith('.json')) {
           const content = await fs.readFile(filePath, 'utf-8');
           const data = JSON.parse(content);
-          
+
           if (Array.isArray(data)) {
             // Handle your Q&A JSON format
             data.forEach((item, index) => {
@@ -166,9 +235,9 @@ async function loadPetData() {
         console.warn(`   ✗ Error processing ${file}:`, fileError.message);
       }
     }
-    
+
     console.log(`✅ Loaded ${petKnowledgeBase.length} knowledge items (${totalQuestions} Q&A pairs)`);
-    
+
   } catch (error) {
     console.error(`❌ Error accessing pet_data folder:`, error.message);
   }
@@ -178,15 +247,15 @@ async function loadPetData() {
 function splitTextIntoChunks(text, chunkSize = 500) {
   const chunks = [];
   let start = 0;
-  
+
   while (start < text.length) {
     let end = start + chunkSize;
-    
+
     // Try to split at sentence boundaries
     if (end < text.length) {
       const lastPeriod = text.lastIndexOf('.', end);
       const lastNewline = text.lastIndexOf('\n', end);
-      
+
       if (lastPeriod > start + chunkSize * 0.5) {
         end = lastPeriod + 1;
       } else if (lastNewline > start + chunkSize * 0.5) {
@@ -195,15 +264,15 @@ function splitTextIntoChunks(text, chunkSize = 500) {
     } else {
       end = text.length;
     }
-    
+
     const chunk = text.substring(start, end).trim();
     if (chunk) {
       chunks.push(chunk);
     }
-    
+
     start = end;
   }
-  
+
   return chunks;
 }
 
@@ -211,37 +280,72 @@ function splitTextIntoChunks(text, chunkSize = 500) {
 async function checkOllama() {
   try {
     console.log('🔍 Checking Ollama connection...');
-    const response = await axios.get(`${OLLAMA_BASE_URL}/api/tags`, { 
-      timeout: 5000 
+    const response = await axios.get(`${OLLAMA_BASE_URL}/api/tags`, {
+      timeout: 5000
     });
-    
+
     if (response.data && response.data.models) {
       const models = response.data.models;
       console.log(`📋 Available models:`, models.map(m => m.name).join(', '));
-      
-      // Find a working model
-      for (const model of models) {
-        try {
-          const testResponse = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-            model: model.name,
-            prompt: "Say 'READY'",
-            stream: false
-          }, { timeout: 10000 });
-          
-          if (testResponse.data && testResponse.data.response) {
-            currentOllamaModel = model.name;
-            isOllamaAvailable = true;
-            console.log(`✅ Ollama available with model: ${currentOllamaModel}`);
-            console.log(`   Test response: ${testResponse.data.response.substring(0, 50)}`);
-            return;
+
+      // Prioritize better models
+      const preferredModels = ['llama3.2:latest', 'llama3.2', 'llama3.2:1b', 'llama3.2:3b'];
+
+      let discoveredModel = null;
+
+      // Try each preferred model until one works
+      for (const pref of preferredModels) {
+        const match = models.find(m => {
+          const mName = m.name.toLowerCase();
+          return mName === pref || mName.startsWith(pref + ':');
+        });
+
+        if (match) {
+          console.log(`🎯 Testing preferred model: ${match.name}`);
+          try {
+            const testResponse = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+              model: match.name,
+              prompt: "Say 'READY'",
+              stream: false
+            }, { timeout: 10000 });
+
+            if (testResponse.data && testResponse.data.response) {
+              discoveredModel = match.name;
+              break;
+            }
+          } catch (e) {
+            console.log(`   Model ${match.name} test failed: ${e.message}`);
           }
-        } catch (testError) {
-          console.log(`   Skipping model ${model.name}: ${testError.message}`);
         }
       }
-      
-      console.log('⚠️ No working Ollama model found');
-      isOllamaAvailable = false;
+
+      // Fallback
+      if (!discoveredModel && models.length > 0) {
+        for (const m of models) {
+          if (preferredModels.some(p => m.name.toLowerCase().startsWith(p))) continue; // Already tried
+          console.log(`⚠️ Trying fallback model: ${m.name}`);
+          try {
+            const res = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+              model: m.name,
+              prompt: "Say 'READY'",
+              stream: false
+            }, { timeout: 10000 });
+            if (res.data && res.data.response) {
+              discoveredModel = m.name;
+              break;
+            }
+          } catch (e) { }
+        }
+      }
+
+      if (discoveredModel) {
+        currentOllamaModel = discoveredModel;
+        isOllamaAvailable = true;
+        console.log(`✅ AI ACTIVATED with model: ${currentOllamaModel}`);
+      } else {
+        console.log('⚠️ No functional AI models found in Ollama.');
+        isOllamaAvailable = false;
+      }
     }
   } catch (error) {
     console.log('⚠️ Ollama not available:', error.message);
@@ -257,25 +361,25 @@ function searchKnowledgeBase(query) {
       sources: []
     };
   }
-  
+
   const lowerQuery = query.toLowerCase();
   const queryWords = lowerQuery.split(' ')
     .filter(word => word.length > 2)
     .map(word => word.replace(/[^a-z]/g, ''));
-  
+
   const relevantItems = [];
-  
+
   // Score each knowledge item
   for (const item of petKnowledgeBase) {
     let score = 0;
     const searchText = (item.question ? item.question + ' ' : '') + item.content;
     const lowerContent = searchText.toLowerCase();
-    
+
     // Exact phrase match (highest score)
     if (lowerContent.includes(lowerQuery)) {
       score += 10;
     }
-    
+
     // Word matches
     for (const word of queryWords) {
       if (word.length > 2) {
@@ -284,25 +388,25 @@ function searchKnowledgeBase(query) {
         score += matches * 2;
       }
     }
-    
+
     // Boost Q&A items that match questions
     if (item.type === 'qa_pair' && item.question.toLowerCase().includes(lowerQuery)) {
       score += 5;
     }
-    
+
     // Category-based scoring
     if (lowerQuery.includes('food') || lowerQuery.includes('diet') || lowerQuery.includes('nutrition')) {
       if (lowerContent.includes('food') || lowerContent.includes('diet') || lowerContent.includes('nutrition')) {
         score += 3;
       }
     }
-    
+
     if (lowerQuery.includes('vaccin') || lowerQuery.includes('shot')) {
       if (lowerContent.includes('vaccin') || lowerContent.includes('vaccination')) {
         score += 3;
       }
     }
-    
+
     if (score > 0) {
       relevantItems.push({
         item: item,
@@ -310,13 +414,13 @@ function searchKnowledgeBase(query) {
       });
     }
   }
-  
+
   // Sort by relevance
   relevantItems.sort((a, b) => b.score - a.score);
-  
+
   // Get top 5 most relevant items
   const topItems = relevantItems.slice(0, 5);
-  
+
   if (topItems.length === 0) {
     // Return general information if no matches
     const generalItems = petKnowledgeBase.slice(0, 2);
@@ -325,52 +429,58 @@ function searchKnowledgeBase(query) {
       sources: generalItems.map(item => item.source)
     };
   }
-  
+
   // Combine content from top items
   let context = "";
   const sources = [];
-  
+
   topItems.forEach((result, index) => {
     const item = result.item;
-    
+
     if (item.type === 'qa_pair') {
       context += `Q: ${item.question}\nA: ${item.content.split('Answer: ')[1] || item.content}\n\n`;
     } else {
       context += `${item.content.substring(0, 600)}\n\n`;
     }
-    
+
     if (!sources.includes(item.source)) {
       sources.push(item.source);
     }
   });
-  
+
   return { context, sources };
 }
 
 // Get response from Ollama with context
 async function getOllamaResponse(query, context) {
   try {
-    const prompt = `You are a helpful pet health advisor for Sri Lankan pet owners. 
-Use the provided context from the pet health knowledge base to answer the question.
+    const prompt = `[System Role]
+You are Dr. Sara, an AI veterinary assistant for Pawpal (Sri Lanka).
+Your mission is to provide helpful, safe, and accurate advice to pet owners.
 
-CONTEXT FROM PET HEALTH KNOWLEDGE BASE:
+[Context Info]
 ${context}
 
-USER'S QUESTION:
+[Instructions]
+1. SEARCH THE CONTEXT FIRST: If the answer is found in the "Context Info" above, use it as your primary source.
+2. USE YOUR OWN KNOWLEDGE: If the answer is NOT in the context, use your professional veterinary knowledge to answer directly.
+3. STRUCTURE & FORMATTING (CRITICAL):
+   - Use plain bullet points with the "•" symbol.
+   - NEVER use asterisks (*), hash symbols (#), or bold markers (**) for lists or formatting.
+   - Use EXACTLY TWO newlines between every paragraph or section to ensure clear, vertical separation.
+   - Headers should be plain text on their own line, NOT preceded by symbols.
+   - Each bullet point or numbered item must be on its own line.
+4. BE DIRECT: Start answering the question directly with a friendly tone. Do not use filler phrases.
+5. PETS ONLY: Only answer questions about animals and pet health.
+6. SAFETY: Always remind users to consult a local veterinarian in Sri Lanka.
+
+[User Question]
 ${query}
 
-INSTRUCTIONS:
-1. Answer based on the provided context
-2. Be helpful, clear, and concise
-3. If the context doesn't contain the answer, say so honestly
-4. Format your answer in a natural, conversational way
-5. Mention if the information is specific to Sri Lanka
-6. Always remind users to consult a veterinarian for specific concerns
+[Dr. Sara's Response]`;
 
-ANSWER:`;
-    
-    console.log(`🤖 Sending to Ollama (${currentOllamaModel})...`);
-    
+    console.log(`🤖 Sending to Ollama (${currentOllamaModel}...`);
+
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: currentOllamaModel,
       prompt: prompt,
@@ -382,19 +492,46 @@ ANSWER:`;
         repeat_penalty: 1.1
       }
     }, { timeout: 45000 }); // Increased timeout
-    
+
     console.log(`✅ Ollama response received (${response.data.response.length} chars)`);
-    return response.data.response;
-    
+
+    // Safety formatting: ensure bullets and numbers have newlines
+    let cleaned = response.data.response;
+
+    // 1. Standardize all bullet marks (•, *, -) into a unique internal placeholder first
+    // This catches bullets at the start of any line or in the middle of sentences.
+    cleaned = cleaned.replace(/(?:^|\s+)[•*-]\s+/gm, ' __BT__ ');
+
+    // 2. Strip all '#' and leftovers '*' symbols (bolding/headers)
+    cleaned = cleaned.replace(/[#*]+/g, '');
+
+    // 3. Convert placeholders into "•" with mandatory double newlines for separation
+    cleaned = cleaned.replace(/\s*__BT__\s+/g, '\n\n• ');
+
+    // 4. Ensure double newlines before numbering (e.g. 1.)
+    cleaned = cleaned.replace(/([^\n])\s*(\d+\.)\s+/g, '$1\n\n$2 ');
+
+    // 5. Clean up excessive spacing
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+
+    // 6. Handle cases where the text starts with a bullet but wasn't caught by the regex
+    if (cleaned.startsWith('•') || cleaned.startsWith(' __BT__ ')) {
+      cleaned = cleaned.replace(/^ __BT__ /, '• ');
+    } else if (response.data.response.trim().startsWith('•') || response.data.response.trim().startsWith('*') || response.data.response.trim().startsWith('-')) {
+      if (!cleaned.startsWith('• ')) cleaned = '• ' + cleaned.trim();
+    }
+
+    return cleaned.trim();
+
   } catch (error) {
     console.error('❌ Ollama API error:', error.message);
-    
+
     // Check if it's a model not found error
     if (error.message.includes('model') && error.message.includes('not found')) {
       console.log('🔄 Trying to find an alternative model...');
       isOllamaAvailable = false;
     }
-    
+
     throw error;
   }
 }
@@ -411,7 +548,7 @@ async function initializeChatbot() {
 app.post('/api/pet-chatbot', async (req, res) => {
   try {
     const { message } = req.body;
-    
+
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' });
     }
@@ -421,7 +558,7 @@ app.post('/api/pet-chatbot', async (req, res) => {
     // Emergency detection
     const lowerMsg = message.toLowerCase();
     const emergencyKeywords = ['emergency', 'bleeding', 'choking', 'not breathing', 'poison', 'seizure', 'dying', 'urgent'];
-    
+
     if (emergencyKeywords.some(keyword => lowerMsg.includes(keyword))) {
       const emergencyResponse = `🚨 **EMERGENCY DETECTED**
 
@@ -438,7 +575,7 @@ I understand this seems urgent. Please take these immediate steps:
 - Kandy Veterinary Hospital: 081-2222444
 
 ⚠️ **This is an automated emergency alert. Please seek professional veterinary care immediately.**`;
-      
+
       return res.json({
         response: emergencyResponse,
         emergency: true,
@@ -449,13 +586,13 @@ I understand this seems urgent. Please take these immediate steps:
 
     // Search for relevant information
     const searchResult = searchKnowledgeBase(message);
-    
+
     console.log(`🔍 Found ${searchResult.sources.length} relevant sources`);
-    
+
     let response;
     let source;
     let aiGenerated = false;
-    
+
     if (isOllamaAvailable && currentOllamaModel) {
       try {
         console.log(`🤖 Generating AI response with ${currentOllamaModel}...`);
@@ -467,7 +604,7 @@ I understand this seems urgent. Please take these immediate steps:
         console.warn('❌ Ollama failed:', ollamaError.message);
         console.log('📚 Falling back to knowledge base only');
         response = `**Based on our pet health knowledge base:**\n\n`;
-        
+
         // Format the knowledge base results nicely
         const qaPairs = searchResult.context.split('\n\n').filter(item => item.trim());
         qaPairs.forEach((qa, index) => {
@@ -479,14 +616,14 @@ I understand this seems urgent. Please take these immediate steps:
             response += `${qa}\n\n`;
           }
         });
-        
+
         source = 'knowledge_base_only';
         aiGenerated = false;
       }
     } else {
       console.log('📚 Using knowledge base only (no AI)');
       response = `**Based on our pet health knowledge base:**\n\n`;
-      
+
       // Format the knowledge base results nicely
       const qaPairs = searchResult.context.split('\n\n').filter(item => item.trim());
       qaPairs.forEach((qa, index) => {
@@ -498,16 +635,16 @@ I understand this seems urgent. Please take these immediate steps:
           response += `${qa}\n\n`;
         }
       });
-      
+
       source = 'knowledge_base_only';
       aiGenerated = false;
     }
-    
+
     // Add disclaimer (but not if it's already in the AI response)
     if (!response.includes('Disclaimer') && !response.includes('consult a veterinarian')) {
       response += "\n---\n**Disclaimer:** This information is from our pet health knowledge base and should not replace professional veterinary advice. Always consult a veterinarian for your pet's specific needs in Sri Lanka.";
     }
-    
+
     res.json({
       response: response,
       source: source,
@@ -519,7 +656,7 @@ I understand this seems urgent. Please take these immediate steps:
 
   } catch (err) {
     console.error('❌ Chatbot error:', err.message);
-    
+
     // Simple fallback
     const fallbackResponse = `I'm having trouble accessing our knowledge base right now. 
 
@@ -532,7 +669,7 @@ For immediate assistance with pet health questions in Sri Lanka, please contact:
 
 Please try again in a few minutes or contact a veterinarian directly.`;
 
-    res.status(500).json({ 
+    res.status(500).json({
       response: fallbackResponse,
       error: 'Service error',
       fallback: true
@@ -544,7 +681,7 @@ Please try again in a few minutes or contact a veterinarian directly.`;
 app.get('/api/test-ollama', async (req, res) => {
   try {
     const testPrompt = "What are safe foods for dogs? Answer in 2 sentences.";
-    
+
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: currentOllamaModel,
       prompt: testPrompt,
@@ -554,7 +691,7 @@ app.get('/api/test-ollama', async (req, res) => {
         num_predict: 200
       }
     }, { timeout: 15000 });
-    
+
     res.json({
       success: true,
       model: currentOllamaModel,
@@ -577,7 +714,7 @@ app.post('/api/reload-knowledge', async (req, res) => {
   try {
     petKnowledgeBase = [];
     await loadPetData();
-    
+
     res.json({
       success: true,
       message: 'Knowledge base reloaded',
@@ -623,8 +760,8 @@ app.use((err, req, res, next) => {
 });
 
 app.use((req, res) => {
-  res.status(404).json({ 
-    message: 'Route not found', 
+  res.status(404).json({
+    message: 'Route not found',
     url: req.originalUrl,
     availableEndpoints: {
       chatbot: 'POST /api/pet-chatbot',
@@ -637,8 +774,47 @@ app.use((req, res) => {
 // Start server
 async function startServer() {
   await initializeChatbot();
-  
-  const server = app.listen(PORT, () => {
+
+  // Socket.IO handlers
+  io.on('connection', (socket) => {
+    console.log('🔌 New client connected:', socket.id);
+
+    // Join a personal notification room (e.g. user_<userId>)
+    socket.on('join_user', (userId) => {
+      socket.join(`user_${userId}`);
+      console.log(`👤 User joined room: user_${userId}`);
+    });
+
+    // Join clinic notification room (e.g. clinic_<clinicId>)
+    socket.on('join_clinic', (clinicId) => {
+      socket.join(`clinic_${clinicId}`);
+      console.log(`🏥 Joined clinic room: clinic_${clinicId}`);
+    });
+
+    // Join pet-specific chat room for real-time messages
+    socket.on('join_chat', (petId) => {
+      socket.join(`chat_pet_${petId}`);
+      console.log(`🐾 Joined chat room: chat_pet_${petId}`);
+    });
+
+    // Leave a pet chat room
+    socket.on('leave_chat', (petId) => {
+      socket.leave(`chat_pet_${petId}`);
+      console.log(`🚪 Left chat room: chat_pet_${petId}`);
+    });
+
+    // Legacy join (kept for backward compatibility)
+    socket.on('join', (userId) => {
+      socket.join(userId);
+      console.log(`👤 User joined room: ${userId}`);
+    });
+
+    socket.on('disconnect', () => {
+      console.log('🔌 Client disconnected');
+    });
+  });
+
+  server.listen(PORT, () => {
     console.log(`\n🚀 Server running on port ${PORT}`);
     console.log(`📁 Data folder: ${PET_DATA_FOLDER}`);
     console.log(`📚 Knowledge base: ${petKnowledgeBase.length} items loaded`);
@@ -663,4 +839,4 @@ startServer().catch(err => {
   process.exit(1);
 });
 
-module.exports = app;
+module.exports = { app, server, io };
