@@ -106,6 +106,7 @@ exports.login = async (req, res) => {
       responseUser.isPrimaryVet = user.isPrimaryVet || false;
       responseUser.ownedClinics = user.ownedClinics || [];
       responseUser.staffRole = user.role || null;
+      responseUser.veterinaryId = user.veterinaryId || null;
 
       if (user.currentActiveClinicId) {
         if (typeof user.currentActiveClinicId === 'object') {
@@ -273,24 +274,32 @@ exports.googleLogin = async (req, res) => {
       }
     }
 
-    // If no user exists and requested role is owner, register them automatically
+    // If no user exists, register them automatically based on requested role
     if (!user) {
       if (role === 'vet') {
-        return res.status(401).json({ success: false, message: 'Google email not associated with any active Vet account. Please contact admin.' });
-      }
-
-      // Create new Pet Owner
-      user = new PetOwner({
-        firstName: given_name || '',
-        lastName: family_name || '',
+        // Create new Veterinarian
+        user = new Veterinarian({
+          firstName: given_name || normalizedEmail.split('@')[0],
+          lastName: family_name || 'Veterinarian',
+          email: normalizedEmail,
+          googleId,
+          accessLevel: 'Enhanced',
+          status: 'Active'
+        });
+      } else {
+        // Create new Pet Owner
+        user = new PetOwner({
+        firstName: given_name || normalizedEmail.split('@')[0],
+        lastName: family_name || 'Owner',
         email: normalizedEmail,
-        googleId,
-        profilePhoto: picture,
-        address: 'Please update your address',
-        phoneNumber: '0000000000'
-      });
+          googleId,
+          profilePhoto: picture,
+          address: 'Please update your address',
+          phoneNumber: '0000000000'
+        });
+      }
       await user.save();
-      actualRole = 'owner';
+      actualRole = role;
       isNewUser = true;
     } else {
       // Link googleId if not linked
@@ -331,6 +340,7 @@ exports.googleLogin = async (req, res) => {
       responseUser.accessLevel = user.accessLevel || null;
       responseUser.isPrimaryVet = user.isPrimaryVet || false;
       responseUser.staffRole = user.role || null;
+      responseUser.veterinaryId = user.veterinaryId || null;
       if (user.currentActiveClinicId && typeof user.currentActiveClinicId === 'object') {
         responseUser.clinic = {
           id: user.currentActiveClinicId._id,

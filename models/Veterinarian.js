@@ -24,9 +24,9 @@ const veterinarianSchema = new mongoose.Schema({
     ref: 'Clinic'
   },
 
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
-  phoneNumber: { type: String, required: true },
+  firstName: { type: String },
+  lastName: { type: String },
+  phoneNumber: { type: String }, // Optional for Google Auth users
   email: { type: String, required: true, unique: true },
   passwordHash: { type: String }, // Optional for Google Auth users
   googleId: { type: String, unique: true, sparse: true },
@@ -34,8 +34,9 @@ const veterinarianSchema = new mongoose.Schema({
   isTwoFactorEnabled: { type: Boolean, default: false },
   resetPasswordToken: { type: String },
   resetPasswordExpires: { type: Date },
-  veterinaryId: { type: String, required: true, unique: true },
+  veterinaryId: { type: String, unique: true, sparse: true },
   specialization: { type: String },
+  address: { type: String },
 
   accessLevel: {
     type: String,

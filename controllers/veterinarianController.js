@@ -18,13 +18,14 @@ const registerVet = async (req, res) => {
       phoneNumber,
       veterinaryId,
       specialization,
+      address,
       isPrimaryVet = false
     } = req.body;
 
     // Required fields
-    if (!firstName || !lastName || !email || !password || !veterinaryId || !phoneNumber) {
+    if (!firstName || !lastName || !email || !password || !phoneNumber || !address) {
       return res.status(400).json({
-        message: 'firstName, lastName, email, password, phoneNumber, and veterinaryId are required'
+        message: 'firstName, lastName, email, password, phoneNumber, and address are required'
       });
     }
 
@@ -46,7 +47,7 @@ const registerVet = async (req, res) => {
     const salt = await bcrypt.genSalt(12);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    let accessLevel = 'Basic';
+    let accessLevel = 'Enhanced'; // Default to Enhanced as requested
     let ownedClinics = [];
     let currentActiveClinicId = null;
 
@@ -57,24 +58,38 @@ const registerVet = async (req, res) => {
     }
 
     // Create the vet
-    const vet = new Veterinarian({
+    const vetData = {
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       email: email.toLowerCase().trim(),
       passwordHash,
       phoneNumber: phoneNumber.trim(),
-      veterinaryId: veterinaryId.trim(),
       specialization: specialization?.trim() || '',
+      address: address?.trim() || '',
       accessLevel,
       ownedClinics,
       currentActiveClinicId,
       status: 'Active'
-    });
+    };
+
+    if (veterinaryId?.trim()) {
+      vetData.veterinaryId = veterinaryId.trim();
+    }
+
+    const vet = new Veterinarian(vetData);
 
     await vet.save();
 
-    const vetResponse = vet.toObject();
-    delete vetResponse.passwordHash;
+    const vetResponse = {
+      id: vet._id,
+      firstName: vet.firstName,
+      lastName: vet.lastName,
+      email: vet.email,
+      phoneNumber: vet.phoneNumber,
+      accessLevel: vet.accessLevel,
+      status: vet.status,
+      role: 'vet'
+    };
 
     res.status(201).json({
       message: 'Veterinarian registered successfully',
@@ -158,29 +173,41 @@ const createSubAccount = async (req, res) => {
     const salt = await bcrypt.genSalt(12);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    // For sub-accounts, they only work at one clinic
-    const subVet = new Veterinarian({
+    const subVetData = {
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       email: email.toLowerCase().trim(),
       passwordHash,
       phoneNumber: phoneNumber?.trim() || '',
-      veterinaryId: veterinaryId.trim(),
       specialization: specialization?.trim() || '',
       currentActiveClinicId: req.body.clinicId,
       accessLevel,
       createdByVetId: creatorVetId,
       status: 'Active'
-    });
+    };
+
+    if (veterinaryId?.trim()) {
+      subVetData.veterinaryId = veterinaryId.trim();
+    }
+
+    const subVet = new Veterinarian(subVetData);
 
     await subVet.save();
 
-    const response = subVet.toObject();
-    delete response.passwordHash;
+    const subVetResponse = {
+      id: subVet._id,
+      firstName: subVet.firstName,
+      lastName: subVet.lastName,
+      email: subVet.email,
+      phoneNumber: subVet.phoneNumber,
+      accessLevel: subVet.accessLevel,
+      status: subVet.status,
+      role: 'vet'
+    };
 
     res.status(201).json({
       message: 'Sub-account created successfully',
-      vet: response
+      vet: subVetResponse
     });
   } catch (error) {
     res.status(400).json({
@@ -278,7 +305,7 @@ const updateVet = async (req, res) => {
     const requesterId = req.user?.id;
 
     // Handle ClinicStaff trying to update their own profile
-    if (req.user?.staffRole && requesterId === id) {
+    if (req.user?.staffRole && requesterId.toString() === id.toString()) {
       const ClinicStaff = require('../models/ClinicStaff');
       const staffToUpdate = await ClinicStaff.findById(id);
       if (!staffToUpdate) return res.status(404).json({ message: 'Staff member not found' });
@@ -300,9 +327,20 @@ const updateVet = async (req, res) => {
         id, cleanUpdates, { new: true, runValidators: true }
       ).select('-passwordHash');
 
+      const responseUser = {
+        id: updatedStaff._id,
+        firstName: updatedStaff.firstName,
+        lastName: updatedStaff.lastName,
+        email: updatedStaff.email,
+        phoneNumber: updatedStaff.phoneNumber || null,
+        role: 'vet',
+        staffRole: updatedStaff.role || null,
+        clinicId: updatedStaff.clinicId || null
+      };
+
       return res.status(200).json({
         message: 'Staff updated successfully',
-        vet: updatedStaff
+        vet: responseUser
       });
     }
 
@@ -320,7 +358,7 @@ const updateVet = async (req, res) => {
     // Authorization:
     // 1. Self-update
     // 2. Enhanced update of sub-accounts
-    const isSelf = requesterId === id;
+    const isSelf = requesterId.toString() === id.toString();
     const isAuthorized = isSelf || requester.accessLevel === 'Enhanced';
 
     if (!isAuthorized) {
@@ -329,15 +367,29 @@ const updateVet = async (req, res) => {
 
     // Critical field protection
     const cleanUpdates = { ...updates };
-    const restricted = ['ownedClinics', 'createdByVetId', 'googleId', 'passwordHash'];
+    const restricted = ['ownedClinics', 'createdByVetId', 'googleId'];
+
+    // Handle password update
+    if (cleanUpdates.password) {
+      const salt = await bcrypt.genSalt(12);
+      cleanUpdates.passwordHash = await bcrypt.hash(cleanUpdates.password, salt);
+      delete cleanUpdates.password;
+    } else {
+      restricted.push('passwordHash');
+    }
 
     // If not Enhanced, cannot change accessLevel or status of others
     if (requester.accessLevel !== 'Enhanced') {
       restricted.push('accessLevel', 'status');
     }
 
-    // Even Enhanced cannot change their own accessLevel or another Enhanced's level
-    if (isSelf || vetToUpdate.accessLevel === 'Enhanced') {
+    // Even Enhanced cannot change another Enhanced's level
+    if (isSelf) {
+      // Allow self-set to Enhanced if desired
+      if (cleanUpdates.accessLevel !== 'Enhanced') {
+        delete cleanUpdates.accessLevel;
+      }
+    } else if (vetToUpdate.accessLevel === 'Enhanced') {
       delete cleanUpdates.accessLevel;
     }
 
@@ -377,6 +429,7 @@ const updateVet = async (req, res) => {
     if (cleanUpdates.phoneNumber) cleanUpdates.phoneNumber = cleanUpdates.phoneNumber.trim();
     if (cleanUpdates.veterinaryId) cleanUpdates.veterinaryId = cleanUpdates.veterinaryId.trim();
     if (cleanUpdates.specialization) cleanUpdates.specialization = cleanUpdates.specialization.trim();
+    if (cleanUpdates.address) cleanUpdates.address = cleanUpdates.address.trim();
 
     // Update the veterinarian
     const updatedVet = await Veterinarian.findByIdAndUpdate(
@@ -385,9 +438,24 @@ const updateVet = async (req, res) => {
       { new: true, runValidators: true }
     ).select('-passwordHash');
 
+    const responseUser = {
+      id: updatedVet._id,
+      firstName: updatedVet.firstName,
+      lastName: updatedVet.lastName,
+      email: updatedVet.email,
+      phoneNumber: updatedVet.phoneNumber || null,
+      address: updatedVet.address || null,
+      role: 'vet',
+      accessLevel: updatedVet.accessLevel,
+      veterinaryId: updatedVet.veterinaryId,
+      specialization: updatedVet.specialization,
+      ownedClinics: updatedVet.ownedClinics || [],
+      currentActiveClinicId: updatedVet.currentActiveClinicId || null
+    };
+
     res.status(200).json({
       message: 'Veterinarian updated successfully',
-      vet: updatedVet
+      vet: responseUser
     });
 
   } catch (error) {
@@ -921,18 +989,10 @@ const deleteVet = async (req, res) => {
     console.log('Access level:', vetToDelete.accessLevel);
     console.log('Current clinic ID:', vetToDelete.currentActiveClinicId);
 
-    // Check if requester is a Primary veterinarian
-    if (primaryVet.accessLevel !== 'Primary') {
-      return res.status(403).json({
-        message: 'Only Primary veterinarians can delete accounts'
-      });
-    }
-
-
     // Check if this is a primary vet (shouldn't happen due to earlier check, but just in case)
     if (vetToDelete.accessLevel === 'Enhanced') {
       return res.status(403).json({
-        message: 'Cannot delete another Primary veterinarian account'
+        message: 'Cannot delete another Enhanced veterinarian account'
       });
     }
 
@@ -1136,6 +1196,10 @@ const getVetNotifications = async (req, res) => {
     const clinicId = isStaff ? vet.clinicId : vet.currentActiveClinicId;
     const ownedClinics = isStaff ? [] : (vet.ownedClinics || []);
 
+    // Build list of clinic IDs this user has access to
+    const clinicsToSearch = [clinicId, ...ownedClinics].filter(Boolean);
+    const hasMultipleClinics = clinicsToSearch.length > 0;
+
     // 1. Pending pet registration requests
     let pendingPetsQuery = {
       registrationStatus: 'Pending',
@@ -1145,12 +1209,18 @@ const getVetNotifications = async (req, res) => {
         { isReadByVet: { $exists: false } }
       ]
     };
-    if (vet.accessLevel !== 'Enhanced') {
-      if (clinicId) pendingPetsQuery.registeredClinicId = clinicId;
-    } else if (clinicId || ownedClinics.length > 0) {
-      const clinicsToSearch = [clinicId, ...ownedClinics].filter(Boolean);
-      pendingPetsQuery.registeredClinicId = { $in: clinicsToSearch };
+
+    if (isStaff || vet.accessLevel === 'Enhanced') {
+      if (hasMultipleClinics) {
+        pendingPetsQuery.registeredClinicId = { $in: clinicsToSearch };
+      } else if (clinicId) {
+        pendingPetsQuery.registeredClinicId = clinicId;
+      }
+    } else {
+        // Basic vets see registrations for their clinic
+        if (clinicId) pendingPetsQuery.registeredClinicId = clinicId;
     }
+
     const pendingRegistrations = await PetProfile.find(pendingPetsQuery)
       .populate('ownerId', 'firstName lastName photo')
       .populate('registeredClinicId', 'name')
@@ -1163,26 +1233,43 @@ const getVetNotifications = async (req, res) => {
     const dayAfterTomorrow = new Date(today);
     dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
 
-    let appointmentsFilter = {};
-    if (vet.accessLevel !== 'Enhanced') {
-      appointmentsFilter.vetId = vetId;
-    } else if (clinicId || ownedClinics.length > 0) {
-      const clinicsToSearch = [clinicId, ...ownedClinics].filter(Boolean);
-      appointmentsFilter.clinicId = { $in: clinicsToSearch };
+    // BUILD FILTER: Appointments where I am the vet OR they belong to a clinic I manage
+    let accessFilter = [];
+    
+    // Always show appointments explicitly assigned to this vet
+    if (!isStaff) accessFilter.push({ vetId: vetId });
+
+    // Show appointments in clinics managed/active
+    if (hasMultipleClinics) {
+      accessFilter.push({ clinicId: { $in: clinicsToSearch } });
+    } else if (clinicId) {
+      accessFilter.push({ clinicId: clinicId });
     }
 
-    // Combine: Booked (Requests - any future) OR Confirmed (Reminders - today/tomorrow)
     let appointmentsQuery = {
-      ...appointmentsFilter,
-      $or: [
-        { isReadByVet: false },
-        { isReadByVet: { $exists: false } }
-      ],
       $and: [
+        { $or: accessFilter },
         {
           $or: [
+            // New requests: Always show until acted upon (never dismissable)
             { status: 'Booked', dateTime: { $gte: today } },
-            { status: 'Confirmed', dateTime: { $gte: today, $lt: dayAfterTomorrow } }
+            // Reminders: Show if Confirmed AND today/tomorrow AND unread
+            { 
+              status: 'Confirmed', 
+              dateTime: { $gte: today, $lt: dayAfterTomorrow },
+              $or: [
+                { isReadByVet: false },
+                { isReadByVet: { $exists: false } }
+              ]
+            },
+            // CANCELLATIONS: Show if unread by vet
+            {
+              status: 'Canceled',
+              $or: [
+                { isReadByVet: false },
+                { isReadByVet: { $exists: false } }
+              ]
+            }
           ]
         }
       ]
@@ -1191,22 +1278,19 @@ const getVetNotifications = async (req, res) => {
     const upcomingAppointments = await Appointment.find(appointmentsQuery)
       .populate('petId', 'name photo')
       .populate('clinicId', 'name')
-      .sort({ dateTime: 1 });
+      .sort({ dateTime: 1 })
+      .limit(20);
 
     // 3. Chat notifications (Unread messages from Owners)
     let chatQuery = { senderType: 'Owner', isRead: { $ne: true } };
 
-    // Find pets linked to the vet's clinics
-    if (vet.accessLevel !== 'Enhanced') {
-      const clinicsToSearch = [clinicId, ...ownedClinics].filter(Boolean);
-      const pets = await PetProfile.find({ registeredClinicId: { $in: clinicsToSearch.length > 0 ? clinicsToSearch : [clinicId] } }).select('_id');
-      const petIds = pets.map(p => p._id);
-      chatQuery.petId = { $in: petIds };
-    } else if (clinicId || ownedClinics.length > 0) {
-      const clinicsToSearch = [clinicId, ...ownedClinics].filter(Boolean);
-      const pets = await PetProfile.find({ registeredClinicId: { $in: clinicsToSearch } }).select('_id');
-      const petIds = pets.map(p => p._id);
-      chatQuery.petId = { $in: petIds };
+    // Find pet ids for filtering chats - use all clinics the user has access to
+    if (hasMultipleClinics || clinicId) {
+        const pets = await PetProfile.find({ 
+            registeredClinicId: { $in: hasMultipleClinics ? clinicsToSearch : [clinicId] } 
+        }).select('_id');
+        const petIdsToFilter = pets.map(p => p._id);
+        chatQuery.petId = { $in: petIdsToFilter };
     }
 
     const unreadChats = await ChatMessage.find(chatQuery)
@@ -1215,31 +1299,31 @@ const getVetNotifications = async (req, res) => {
         select: 'name photo ownerId',
         populate: { path: 'ownerId', select: '_id' }
       })
-      .sort({ timestamp: -1 });
+      .sort({ timestamp: -1 })
+      .limit(20);
 
-    // Transform chats to include ownerId at top level for easier frontend navigation
+    // Transform chats...
     const transformedChats = unreadChats.map(chat => {
-      const chatObj = chat.toObject();
+      const chatObj = chat.toObject ? chat.toObject() : chat;
       return {
         ...chatObj,
-        // Since we filtered by senderType: 'Owner', senderId is the owner's ID
         ownerId: chatObj.senderId?.toString() || chatObj.petId?.ownerId?._id || chatObj.petId?.ownerId
       };
     });
 
-    console.log(`Notifications found - Registrations: ${pendingRegistrations.length}, Appointments: ${upcomingAppointments.length}, Chats: ${transformedChats.length}`);
+    console.log(`📡 VetNotifications for ${vet.firstName}: Regs:${pendingRegistrations.length}, Appts:${upcomingAppointments.length}, Chats:${transformedChats.length}`);
 
     res.status(200).json({
       success: true,
       notifications: {
-        pendingRegistrations: pendingRegistrations,
+        pendingRegistrations,
         appointments: upcomingAppointments,
         unreadChats: transformedChats
       }
     });
   } catch (error) {
-    console.error('Error in getVetNotifications:', error);
-    res.status(500).json({ message: 'Error fetching notifications', error: error.message });
+    console.error('❌ Error in getVetNotifications:', error);
+    res.status(500).json({ success: false, message: 'Error fetching notifications', error: error.message });
   }
 };
 

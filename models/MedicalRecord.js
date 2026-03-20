@@ -8,7 +8,8 @@ const medicalRecordSchema = new mongoose.Schema({
   diagnosis: { type: String },
   treatmentNotes: { type: String },
   visibleToOwner: { type: Boolean, default: false },
-  attachments: [{ type: String }] // Array of URLs
+  attachments: [{ type: String }], // Array of URLs
+  prescriptionUrl: { type: String }
 });
 
 module.exports = mongoose.model('MedicalRecord', medicalRecordSchema);

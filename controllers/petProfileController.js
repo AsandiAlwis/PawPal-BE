@@ -4,6 +4,7 @@ const Clinic = require('../models/Clinic');
 const Veterinarian = require('../models/Veterinarian');
 const ClinicStaff = require('../models/ClinicStaff');
 const ChatMessage = require('../models/ChatMessage');
+const Appointment = require('../models/Appointment');
 
 // Create a new pet profile (Pet Owner only)
 exports.createPet = async (req, res) => {
@@ -151,7 +152,7 @@ exports.getPetById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const pet = await PetProfile.findById(id)
+    const pet = await PetProfile.findOne({ _id: id, isDeleted: { $ne: true } })
       .populate('ownerId', 'firstName lastName email phoneNumber')
       .populate('registeredClinicId', 'name address phoneNumber operatingHours');
 
@@ -189,8 +190,8 @@ exports.updatePet = async (req, res) => {
       return res.status(400).json({ message: 'Invalid gender value' });
     }
 
-    const pet = await PetProfile.findByIdAndUpdate(
-      id,
+    const pet = await PetProfile.findOneAndUpdate(
+      { _id: id, isDeleted: { $ne: true } },
       { $set: updates },
       { new: true, runValidators: true }
     )
@@ -228,6 +229,12 @@ exports.deletePet = async (req, res) => {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
+    // Also cancel all pending/confirmed appointments for this pet
+    await Appointment.updateMany(
+      { petId: id, status: { $in: ['Booked', 'Confirmed'] } },
+      { status: 'Canceled', notes: 'Appointment canceled because pet profile was deleted.' }
+    );
+
     res.status(200).json({
       message: 'Pet profile soft-deleted successfully',
       pet
@@ -235,6 +242,33 @@ exports.deletePet = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       message: 'Error deleting pet profile',
+      error: error.message
+    });
+  }
+};
+
+// Remove a personal medical record
+exports.removePersonalRecord = async (req, res) => {
+  try {
+    const { id, recordId } = req.params;
+
+    const pet = await PetProfile.findOneAndUpdate(
+      { _id: id, ownerId: req.user.id, isDeleted: { $ne: true } },
+      { $pull: { personalRecords: { _id: recordId } } },
+      { new: true }
+    );
+
+    if (!pet) {
+      return res.status(404).json({ message: 'Pet not found or unauthorized' });
+    }
+
+    res.status(200).json({
+      message: 'Record removed successfully',
+      pet
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: 'Error removing record',
       error: error.message
     });
   }

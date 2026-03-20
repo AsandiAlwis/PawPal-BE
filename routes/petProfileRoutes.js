@@ -115,6 +115,7 @@ router.get('/:id', protect, petController.getPetById);
 router.put('/:id', protect, authorize('owner'), petController.updatePet);
 
 router.delete('/:id', protect, authorize('owner'), petController.deletePet);
+router.delete('/:id/personal-records/:recordId', protect, authorize('owner'), petController.removePersonalRecord);
 
 router.post('/:id/request-registration', protect, authorize('owner'), petController.requestClinicRegistration);
 

@@ -60,9 +60,17 @@ exports.registerOwner = async (req, res) => {
 
     await owner.save();
 
-    // Do not return passwordHash in response
-    const ownerResponse = owner.toObject();
-    delete ownerResponse.passwordHash;
+    const ownerResponse = {
+      id: owner._id,
+      firstName: owner.firstName,
+      lastName: owner.lastName,
+      email: owner.email,
+      phoneNumber: owner.phoneNumber,
+      address: owner.address,
+      profilePhoto: owner.profilePhoto,
+      isTwoFactorEnabled: owner.isTwoFactorEnabled,
+      role: 'owner'
+    };
 
     res.status(201).json({
       message: 'Pet owner registered successfully',
@@ -190,9 +198,21 @@ exports.updateOwner = async (req, res) => {
       return res.status(404).json({ message: 'Owner not found' });
     }
 
+    const ownerResponse = {
+      id: owner._id,
+      firstName: owner.firstName,
+      lastName: owner.lastName,
+      email: owner.email,
+      phoneNumber: owner.phoneNumber,
+      address: owner.address,
+      profilePhoto: owner.profilePhoto,
+      isTwoFactorEnabled: owner.isTwoFactorEnabled,
+      role: 'owner'
+    };
+
     res.status(200).json({
       message: 'Owner updated successfully',
-      owner
+      owner: ownerResponse
     });
   } catch (error) {
     res.status(400).json({
