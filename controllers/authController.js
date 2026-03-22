@@ -97,7 +97,9 @@ exports.login = async (req, res) => {
       email: user.email,
       role: role,
       phoneNumber: user.phoneNumber || null,
-      address: user.address || null
+      address: user.address || null,
+      isTwoFactorEnabled: user.isTwoFactorEnabled || false,
+      hasPassword: !!user.passwordHash
     };
 
     // Vet-specific fields
@@ -194,6 +196,8 @@ exports.getMe = async (req, res) => {
       email: user.email,
       phoneNumber: user.phoneNumber || null,
       address: user.address || null,
+      isTwoFactorEnabled: user.isTwoFactorEnabled || false,
+      hasPassword: !!user.passwordHash,
       role
     };
 
@@ -333,7 +337,9 @@ exports.googleLogin = async (req, res) => {
       role: actualRole,
       phoneNumber: user.phoneNumber || null,
       address: user.address || null,
-      profilePhoto: user.profilePhoto || null
+      profilePhoto: user.profilePhoto || null,
+      isTwoFactorEnabled: user.isTwoFactorEnabled || false,
+      hasPassword: !!user.passwordHash
     };
 
     if (actualRole === 'vet') {
@@ -567,18 +573,47 @@ exports.changePassword = async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     const userId = req.user.id;
 
-    if (!oldPassword || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Please provide old and new passwords' });
+    if (!newPassword) {
+      return res.status(400).json({ success: false, message: 'Please provide a new password' });
     }
 
-    // Find user in any model
-    let user = await PetOwner.findById(userId) || await Veterinarian.findById(userId) || await ClinicStaff.findById(userId);
+    // Find user in any model - prioritize by role
+    let user = null;
+    if (req.user.role === 'vet') {
+      user = await Veterinarian.findById(userId) || await ClinicStaff.findById(userId);
+    } else {
+      user = await PetOwner.findById(userId);
+    }
+
+    // Default fallback
+    if (!user) {
+      user = await PetOwner.findById(userId) || await Veterinarian.findById(userId) || await ClinicStaff.findById(userId);
+    }
+
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Verify old password
-    const isMatch = await bcrypt.compare(oldPassword, user.passwordHash);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Incorrect old password' });
+    // Handle users without a password (e.g. Google Auth users)
+    if (!user.passwordHash) {
+      // If it's a first time setting password, we don't need oldPassword
+      // BUT we should verify that this was intended
+      if (user.googleId) {
+        console.log(`Setting initial password for Google user: ${user.email}`);
+      } else {
+        // This is weird (no password and no Google ID)
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Your account does not have a password set. This is unusual. Please contact support.' 
+        });
+      }
+    } else {
+      // Normal verification for users that HAVE a password
+      if (!oldPassword) {
+         return res.status(400).json({ success: false, message: 'Old password is required for security' });
+      }
+      const isMatch = await bcrypt.compare(oldPassword, user.passwordHash);
+      if (!isMatch) {
+         return res.status(401).json({ success: false, message: 'Incorrect old password' });
+      }
     }
 
     // Hash and set new password

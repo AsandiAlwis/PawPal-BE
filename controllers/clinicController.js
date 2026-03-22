@@ -364,7 +364,7 @@ exports.addClinicStaff = async (req, res) => {
     }
 
     if (clinicId) {
-      clinic = await Clinic.findById(clinicId);
+      const clinic = await Clinic.findById(clinicId);
       if (!clinic) {
         return res.status(404).json({
           message: 'Clinic not found'
@@ -408,6 +408,7 @@ exports.addClinicStaff = async (req, res) => {
         passwordHash,
         phoneNumber: phoneNumber?.trim() || '',
         specialization: specialization?.trim() || '',
+        address: 'Registered by Clinic', // Skip 'Complete Profile' popup
         accessLevel: accessLevel || 'Basic',
         createdByVetId: creator._id,
         status: 'Active'
@@ -494,7 +495,7 @@ exports.addClinicStaff = async (req, res) => {
   } catch (error) {
     console.error('Error in addClinicStaff:', error);
     res.status(500).json({
-      message: 'Error adding staff member',
+      message: 'Error adding veterinarian',
       error: error.message
     });
   }

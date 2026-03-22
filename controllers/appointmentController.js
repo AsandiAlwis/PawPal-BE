@@ -57,9 +57,13 @@ exports.bookAppointment = async (req, res) => {
 
     await appointment.save();
 
-    // Populate full details
+    // Populate full details for full visibility in dashboard/socket
     await appointment.populate([
-      { path: 'petId', select: 'name species breed photo' },
+      { 
+        path: 'petId', 
+        select: 'name species breed photo',
+        populate: { path: 'ownerId', select: 'firstName lastName phoneNumber email' }
+      },
       { path: 'ownerId', select: 'firstName lastName email phoneNumber' },
       { path: 'vetId', select: 'firstName lastName specialization' },
       { path: 'clinicId', select: 'name address phoneNumber' }
@@ -236,7 +240,8 @@ exports.cancelAppointment = async (req, res) => {
     ).populate([
       {
         path: 'petId',
-        populate: { path: 'ownerId', select: 'firstName lastName phoneNumber' }
+        select: 'name species breed photo',
+        populate: { path: 'ownerId', select: 'firstName lastName phoneNumber email' }
       },
       'vetId',
       'clinicId',
@@ -305,7 +310,8 @@ exports.confirmAppointment = async (req, res) => {
     ).populate([
       {
         path: 'petId',
-        populate: { path: 'ownerId', select: 'firstName lastName phoneNumber' }
+        select: 'name species breed photo',
+        populate: { path: 'ownerId', select: 'firstName lastName phoneNumber email' }
       },
       'vetId',
       'clinicId',
@@ -766,7 +772,8 @@ exports.rescheduleAppointment = async (req, res) => {
       .populate([
         {
           path: 'petId',
-          populate: { path: 'ownerId', select: 'firstName lastName phoneNumber' }
+          select: 'name species breed photo',
+          populate: { path: 'ownerId', select: 'firstName lastName phoneNumber email' }
         },
         'vetId',
         'clinicId',
@@ -836,8 +843,8 @@ exports.getOwnerNotifications = async (req, res) => {
       const clinicName = appt.clinicId?.name || 'the clinic';
       const dateStr = apptDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-      // Upcoming within 48 hours
-      if (appt.status !== 'Canceled' && apptDate >= now && apptDate <= in48h) {
+      // Upcoming within 48 hours — only if confirmed
+      if (appt.status === 'Confirmed' && apptDate >= now && apptDate <= in48h) {
         notifications.push({
           id: `upcoming_${appt._id}`,
           type: 'reminder',

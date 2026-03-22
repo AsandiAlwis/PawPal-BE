@@ -38,8 +38,11 @@ const registerVet = async (req, res) => {
     });
 
     if (existingVet) {
+      const isEmailDup = existingVet.email.toLowerCase() === email.toLowerCase().trim();
       return res.status(409).json({
-        message: 'A veterinarian with this email or license already exists'
+        message: isEmailDup 
+          ? 'A veterinarian with this email already exists' 
+          : 'A veterinarian with this license ID already exists'
       });
     }
 
@@ -180,6 +183,7 @@ const createSubAccount = async (req, res) => {
       passwordHash,
       phoneNumber: phoneNumber?.trim() || '',
       specialization: specialization?.trim() || '',
+      address: 'Registered by Clinic', // Skip 'Complete Profile' popup
       currentActiveClinicId: req.body.clinicId,
       accessLevel,
       createdByVetId: creatorVetId,
@@ -411,6 +415,19 @@ const updateVet = async (req, res) => {
       }
     }
 
+    // Check if new veterinary ID already exists
+    if (cleanUpdates.veterinaryId && cleanUpdates.veterinaryId.trim() !== (vetToUpdate.veterinaryId || '')) {
+      const existingVetWithId = await Veterinarian.findOne({ 
+        veterinaryId: cleanUpdates.veterinaryId.trim(),
+        _id: { $ne: id }
+      });
+      if (existingVetWithId) {
+        return res.status(400).json({ 
+          message: 'Veterinary license ID is already in use by another veterinarian' 
+        });
+      }
+    }
+
     // If assignedClinics is provided, update clinicId for backward compatibility
     if (cleanUpdates.assignedClinics && Array.isArray(cleanUpdates.assignedClinics)) {
       if (cleanUpdates.assignedClinics.length > 0) {
@@ -422,21 +439,48 @@ const updateVet = async (req, res) => {
       }
     }
 
-    // Trim string fields
+    // Trim string fields and omit if empty to avoid unique index collisions
     if (cleanUpdates.firstName) cleanUpdates.firstName = cleanUpdates.firstName.trim();
     if (cleanUpdates.lastName) cleanUpdates.lastName = cleanUpdates.lastName.trim();
     if (cleanUpdates.email) cleanUpdates.email = cleanUpdates.email.toLowerCase().trim();
     if (cleanUpdates.phoneNumber) cleanUpdates.phoneNumber = cleanUpdates.phoneNumber.trim();
-    if (cleanUpdates.veterinaryId) cleanUpdates.veterinaryId = cleanUpdates.veterinaryId.trim();
-    if (cleanUpdates.specialization) cleanUpdates.specialization = cleanUpdates.specialization.trim();
-    if (cleanUpdates.address) cleanUpdates.address = cleanUpdates.address.trim();
+    
+    const updateData = { ...cleanUpdates };
+    const unsetData = {};
+
+    if (typeof cleanUpdates.veterinaryId === 'string') {
+      const trimmed = cleanUpdates.veterinaryId.trim();
+      if (trimmed) {
+        updateData.veterinaryId = trimmed;
+      } else {
+        delete updateData.veterinaryId;
+        unsetData.veterinaryId = 1;
+      }
+    }
+    
+    if (typeof cleanUpdates.specialization === 'string') {
+      const trimmed = cleanUpdates.specialization.trim();
+      if (trimmed) {
+        updateData.specialization = trimmed;
+      } else {
+        delete updateData.specialization;
+        unsetData.specialization = 1;
+      }
+    }
+    
+    if (updateData.address) updateData.address = updateData.address.trim();
+
+    const finalUpdate = { $set: updateData };
+    if (Object.keys(unsetData).length > 0) {
+      finalUpdate.$unset = unsetData;
+    }
 
     // Update the veterinarian
     const updatedVet = await Veterinarian.findByIdAndUpdate(
       id,
-      cleanUpdates,
+      finalUpdate,
       { new: true, runValidators: true }
-    ).select('-passwordHash');
+    ); // Don't use .select('-passwordHash') here yet as we need it for the flag
 
     const responseUser = {
       id: updatedVet._id,
@@ -447,10 +491,11 @@ const updateVet = async (req, res) => {
       address: updatedVet.address || null,
       role: 'vet',
       accessLevel: updatedVet.accessLevel,
-      veterinaryId: updatedVet.veterinaryId,
-      specialization: updatedVet.specialization,
+      veterinaryId: updatedVet.veterinaryId || null,
+      specialization: updatedVet.specialization || null,
       ownedClinics: updatedVet.ownedClinics || [],
-      currentActiveClinicId: updatedVet.currentActiveClinicId || null
+      currentActiveClinicId: updatedVet.currentActiveClinicId || null,
+      hasPassword: !!updatedVet.passwordHash
     };
 
     res.status(200).json({
