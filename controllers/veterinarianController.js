@@ -30,11 +30,13 @@ const registerVet = async (req, res) => {
     }
 
     // Check if email or veterinaryId already exists
+    const orConditions = [{ email: email.toLowerCase().trim() }];
+    if (veterinaryId && veterinaryId.trim() !== '') {
+      orConditions.push({ veterinaryId: veterinaryId.trim() });
+    }
+
     const existingVet = await Veterinarian.findOne({
-      $or: [
-        { email: email.toLowerCase().trim() },
-        { veterinaryId: veterinaryId.trim() }
-      ]
+      $or: orConditions
     });
 
     if (existingVet) {
@@ -52,7 +54,11 @@ const registerVet = async (req, res) => {
 
     let accessLevel = 'Enhanced'; // Default to Enhanced as requested
     let ownedClinics = [];
-    let currentActiveClinicId = null;
+    
+    // Fetch all existing clinics to assign to the new vet
+    const allClinics = await Clinic.find({});
+    const assignedClinics = allClinics.map(clinic => clinic._id);
+    let currentActiveClinicId = assignedClinics.length > 0 ? assignedClinics[0] : null;
 
     // Handle Primary Vet logic
     if (isPrimaryVet) {
@@ -72,6 +78,8 @@ const registerVet = async (req, res) => {
       accessLevel,
       ownedClinics,
       currentActiveClinicId,
+      assignedClinics,
+      clinicId: currentActiveClinicId,
       status: 'Active'
     };
 
@@ -163,11 +171,13 @@ const createSubAccount = async (req, res) => {
     }
 
     // Duplicate check
+    const orConditions = [{ email: email.toLowerCase().trim() }];
+    if (veterinaryId && veterinaryId.trim() !== '') {
+      orConditions.push({ veterinaryId: veterinaryId.trim() });
+    }
+
     const existing = await Veterinarian.findOne({
-      $or: [
-        { email: email.toLowerCase().trim() },
-        { veterinaryId: veterinaryId.trim() }
-      ]
+      $or: orConditions
     });
     if (existing) {
       return res.status(409).json({ message: 'Email or license already in use' });
@@ -234,16 +244,26 @@ const getVetsByClinic = async (req, res) => {
       return res.status(404).json({ message: 'Clinic not found' });
     }
 
-    // Find vets who have this clinic as their current active clinic OR own it
+    console.log('=== getVetsByClinic DEBUG ===');
+    console.log('Target Clinic ID:', clinicId);
+    
+    const mongooseClinicId = new mongoose.Types.ObjectId(clinicId);
+
+    // Find vets who have this clinic as their current active clinic OR own it OR are assigned
     const vets = await Veterinarian.find({
       $or: [
-        { currentActiveClinicId: clinicId },
-        { ownedClinics: clinicId }
+        { currentActiveClinicId: mongooseClinicId },
+        { clinicId: mongooseClinicId },
+        { ownedClinics: { $in: [mongooseClinicId] } },
+        { assignedClinics: { $in: [mongooseClinicId] } }
       ],
       status: 'Active'
     })
       .select('-passwordHash')
       .sort({ accessLevel: -1, firstName: 1 });
+
+    console.log(`Found ${vets.length} vets for clinic ${clinicId}:`, vets.map(v => `${v.firstName} ${v.lastName} (ID: ${v._id})`));
+    console.log('=============================');
 
     res.status(200).json({
       clinicName: clinic.name,
@@ -252,6 +272,7 @@ const getVetsByClinic = async (req, res) => {
       vets
     });
   } catch (error) {
+    console.error('Error in getVetsByClinic:', error);
     res.status(500).json({
       message: 'Error fetching veterinarians',
       error: error.message
@@ -916,8 +937,16 @@ const getStaffByEnhancedVet = async (req, res) => {
           status: vet.status,
           currentActiveClinicId: vet.currentActiveClinicId?._id?.toString() || null,
           clinic: vet.currentActiveClinicId || null,
+          assignedClinics: (vet.assignedClinics || []).map(id => id.toString()),
           type: 'Veterinarian',
-          isPrimary: false
+          isPrimary: false,
+          details: {
+            role: 'Veterinarian',
+            specialization: vet.specialization || null,
+            licenseId: vet.veterinaryId || null,
+            isPrimary: false,
+            accessLevel: vet.accessLevel
+          }
         };
       });
 
@@ -949,7 +978,13 @@ const getStaffByEnhancedVet = async (req, res) => {
     const allStaff = [formattedEnhanced, ...formattedVets, ...formattedStaff];
 
     // ── Fetch clinic details for context ──────────────────────────────────
-    const clinics = await Clinic.find({ _id: { $in: clinicIdsToSearch } })
+    let clinicQuery = { _id: { $in: clinicIdsToSearch } };
+    if (primaryVet.accessLevel === 'Enhanced') {
+      // Enhanced vets should see ALL clinics in the system for assignment
+      clinicQuery = {};
+    }
+    
+    const clinics = await Clinic.find(clinicQuery)
       .select('name address phoneNumber');
 
     // ── Final response ────────────────────────────────────────────────────

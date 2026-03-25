@@ -330,7 +330,8 @@ exports.addClinicStaff = async (req, res) => {
       specialization,      // Optional for veterinarian
       accessLevel = 'Basic', // For veterinarian: 'Basic' or 'Enhanced'
       role,                // For non-vet: 'Receptionist', 'Vet Tech', 'Manager', 'Assistant', 'Kennel Staff'
-      clinicId             // REQUIRED: Which clinic to add staff to
+      clinicId,            // Kept for backward compatibility
+      clinicIds            // NEW: Support for multiple clinics
     } = req.body;
 
     // === 1. Authentication & Role Check ===
@@ -349,13 +350,6 @@ exports.addClinicStaff = async (req, res) => {
       });
     }
 
-    console.log('Creator vet:', {
-      id: creator._id,
-      accessLevel: creator.accessLevel,
-      ownedClinics: creator.ownedClinics,
-      currentActiveClinicId: creator.currentActiveClinicId
-    });
-
     // Only Enhanced vets can add staff
     if (creator.accessLevel !== 'Enhanced') {
       return res.status(403).json({
@@ -363,14 +357,19 @@ exports.addClinicStaff = async (req, res) => {
       });
     }
 
-    if (clinicId) {
-      const clinic = await Clinic.findById(clinicId);
-      if (!clinic) {
-        return res.status(404).json({
-          message: 'Clinic not found'
-        });
+    // === 2. Clinic Verification ===
+    // Determine the final set of clinic IDs
+    const resolvedClinicIds = Array.isArray(clinicIds) ? clinicIds : (clinicId ? [clinicId] : []);
+
+    if (resolvedClinicIds.length > 0) {
+      for (const cid of resolvedClinicIds) {
+        const clinic = await Clinic.findById(cid);
+        if (!clinic) {
+          return res.status(404).json({
+            message: `Clinic not found: ${cid}`
+          });
+        }
       }
-      console.log('Clinic verified:', clinic.name);
     }
 
     // === 3. Basic Validation ===
@@ -385,7 +384,6 @@ exports.addClinicStaff = async (req, res) => {
 
     // === 4. Add Veterinarian Sub-Account ===
     if (normalizedStaffType === 'veterinarian') {
-      // Check for duplicate email or license (if provided) or phone number
       const existingVetEmail = await Veterinarian.findOne({ email: normalizedEmail });
       if (existingVetEmail) {
         return res.status(409).json({ message: 'Email address is already in use' });
@@ -408,7 +406,7 @@ exports.addClinicStaff = async (req, res) => {
         passwordHash,
         phoneNumber: phoneNumber?.trim() || '',
         specialization: specialization?.trim() || '',
-        address: 'Registered by Clinic', // Skip 'Complete Profile' popup
+        address: 'Registered by Clinic',
         accessLevel: accessLevel || 'Basic',
         createdByVetId: creator._id,
         status: 'Active'
@@ -418,9 +416,9 @@ exports.addClinicStaff = async (req, res) => {
         newVetData.veterinaryId = veterinaryId.trim();
       }
 
-      if (clinicId) {
-        newVetData.currentActiveClinicId = clinicId;
-        newVetData.assignedClinics = [clinicId];
+      if (resolvedClinicIds.length > 0) {
+        newVetData.currentActiveClinicId = resolvedClinicIds[0];
+        newVetData.assignedClinics = resolvedClinicIds;
       } else {
         newVetData.assignedClinics = [];
       }
@@ -438,7 +436,6 @@ exports.addClinicStaff = async (req, res) => {
     }
 
     // === 5. Add Non-Veterinarian Clinic Staff ===
-    // Any type that is not 'veterinarian' is treated as non-vet staff
     if (normalizedStaffType !== 'veterinarian') {
       if (!role) {
         return res.status(400).json({
@@ -446,7 +443,6 @@ exports.addClinicStaff = async (req, res) => {
         });
       }
 
-      // Check for duplicate email in ClinicStaff
       const existingStaff = await ClinicStaff.findOne({ email: normalizedEmail });
       if (existingStaff) {
         return res.status(409).json({
@@ -457,10 +453,7 @@ exports.addClinicStaff = async (req, res) => {
       const salt = await bcrypt.genSalt(12);
       const passwordHash = await bcrypt.hash(password, salt);
 
-      // Map role to access level - handle all frontend role values
       const staffAccessLevel = accessLevel || 'Basic';
-
-      console.log('Creating staff with role:', role, 'accessLevel:', staffAccessLevel);
 
       const newStaffData = {
         firstName: firstName.trim(),
@@ -474,9 +467,9 @@ exports.addClinicStaff = async (req, res) => {
         status: 'Active'
       };
 
-      if (clinicId) {
-        newStaffData.clinicId = clinicId;
-        newStaffData.assignedClinics = [clinicId];
+      if (resolvedClinicIds.length > 0) {
+        newStaffData.clinicId = resolvedClinicIds[0];
+        newStaffData.assignedClinics = resolvedClinicIds;
       }
 
       const newStaff = new ClinicStaff(newStaffData);

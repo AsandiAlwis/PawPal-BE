@@ -13,7 +13,8 @@ const {
   getTodayAppointmentsCountByVet,
   getMyAppointments,
   rescheduleAppointment,
-  getOwnerNotifications
+  getOwnerNotifications,
+  deleteAppointment
 } = require('../controllers/appointmentController');
 
 const { protect, authorize } = require('../middleware/auth');
@@ -83,5 +84,8 @@ router.patch('/:id/reschedule', protect, authorize('owner'), rescheduleAppointme
 
 // Owner notifications (appointment-based)
 router.get('/owner/notifications', protect, authorize('owner'), getOwnerNotifications);
+
+// TEMPORARY: Manual delete for appointments
+router.delete('/:id', protect, authorize('vet'), deleteAppointment);
 
 module.exports = router;

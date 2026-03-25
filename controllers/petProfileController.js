@@ -88,6 +88,13 @@ exports.createPet = async (req, res) => {
       message: 'Pet profile created successfully',
       pet
     });
+
+    // === REAL-TIME NOTIFICATION ===
+    const io = req.app.get('socketio');
+    if (io && pet.registeredClinicId) {
+      io.to(`clinic_${pet.registeredClinicId}`).emit('newRegistration', pet);
+      console.log(`📡 Socket: Notified clinic ${pet.registeredClinicId} about new pet registration: ${pet.name}`);
+    }
   } catch (error) {
     console.error('Error creating pet:', error);
     res.status(500).json({
@@ -118,6 +125,7 @@ exports.getPetsByOwner = async (req, res) => {
     }
 
     const pets = await PetProfile.find(query)
+      .populate('ownerId', 'firstName lastName email phoneNumber')
       .populate('registeredClinicId', 'name address phoneNumber')
       .sort({ name: 1 });
 
@@ -305,6 +313,13 @@ exports.requestClinicRegistration = async (req, res) => {
       message: 'Registration request sent to clinic',
       pet
     });
+
+    // === REAL-TIME NOTIFICATION ===
+    const io = req.app.get('socketio');
+    if (io && clinicId) {
+      io.to(`clinic_${clinicId}`).emit('newRegistration', pet);
+      console.log(`📡 Socket: Notified clinic ${clinicId} about registration request for ${pet.name}`);
+    }
   } catch (error) {
     res.status(400).json({
       message: 'Error requesting clinic registration',
@@ -646,6 +661,20 @@ exports.approvePetRegistration = async (req, res) => {
       message: 'Pet registration approved successfully',
       pet
     });
+
+    // === REAL-TIME NOTIFICATION ===
+    const io = req.app.get('socketio');
+    if (io) {
+      const ownerId = pet.ownerId?._id?.toString() || pet.ownerId?.toString();
+      if (ownerId) {
+        io.to(`user_${ownerId}`).emit('registrationStatusChanged', {
+          petId: pet._id,
+          status: 'Approved',
+          petName: pet.name,
+          clinicName: pet.registeredClinicId?.name
+        });
+      }
+    }
   } catch (error) {
     console.error('Error approving pet registration:', error);
     res.status(500).json({
@@ -694,6 +723,20 @@ exports.rejectPetRegistration = async (req, res) => {
       pet
     });
 
+    // === REAL-TIME NOTIFICATION ===
+    const io = req.app.get('socketio');
+    if (io) {
+      const ownerId = pet.ownerId?._id?.toString() || pet.ownerId?.toString();
+      if (ownerId) {
+        io.to(`user_${ownerId}`).emit('registrationStatusChanged', {
+          petId: pet._id,
+          status: 'Rejected',
+          petName: pet.name,
+          clinicName: pet.registeredClinicId?.name,
+          reason: pet.rejectionReason
+        });
+      }
+    }
   } catch (error) {
     console.error('Error rejecting pet registration:', error);
     res.status(500).json({
@@ -724,10 +767,17 @@ exports.getRegisteredPetsForVetClinic = async (req, res) => {
 
     // If Basic Access, only show pets for their assigned clinic
     if (!isEnhanced) {
-      if (!req.user.clinicId) {
+      const activeClinicId = req.user.currentActiveClinicId || req.user.clinicId;
+
+      if (!activeClinicId && (!req.user.assignedClinics || req.user.assignedClinics.length === 0)) {
         return res.status(200).json({ success: true, count: 0, registeredPets: [], isGlobalView: false });
       }
-      query.registeredClinicId = req.user.clinicId;
+
+      if (activeClinicId) {
+        query.registeredClinicId = activeClinicId;
+      } else {
+        query.registeredClinicId = { $in: req.user.assignedClinics };
+      }
     }
 
     // 2. Fetch approved pets

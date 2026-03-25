@@ -1,6 +1,7 @@
 const PetOwner = require('../models/PetOwner');
 const Veterinarian = require('../models/Veterinarian');
 const ClinicStaff = require('../models/ClinicStaff');
+const Clinic = require('../models/Clinic');
 const bcrypt = require('bcryptjs');
 const generateToken = require('../utils/generateToken');
 const { OAuth2Client } = require('google-auth-library');
@@ -256,10 +257,26 @@ exports.googleLogin = async (req, res) => {
     const { email, given_name, family_name, sub: googleId, picture } = payload;
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Check if user exists
-    let user = await PetOwner.findOne({ email: normalizedEmail });
+    // Check if user exists by googleId first (most authoritative for Google login)
+    let user = await PetOwner.findOne({ googleId: googleId });
     let actualRole = 'owner';
     let isNewUser = false;
+
+    if (!user) {
+      user = await Veterinarian.findOne({ googleId: googleId, status: 'Active' })
+        .populate('currentActiveClinicId', 'name address phoneNumber');
+      if (user) {
+        actualRole = 'vet';
+      }
+    }
+
+    // If not found by googleId, search by email
+    if (!user) {
+      user = await PetOwner.findOne({ email: normalizedEmail });
+      if (user) {
+        actualRole = 'owner';
+      }
+    }
 
     if (!user) {
       user = await Veterinarian.findOne({ email: normalizedEmail, status: 'Active' })
@@ -281,6 +298,11 @@ exports.googleLogin = async (req, res) => {
     // If no user exists, register them automatically based on requested role
     if (!user) {
       if (role === 'vet') {
+        // Fetch all existing clinics to assign to the new vet
+        const allClinics = await Clinic.find({});
+        const assignedClinics = allClinics.map(clinic => clinic._id);
+        const currentActiveClinicId = assignedClinics.length > 0 ? assignedClinics[0] : null;
+
         // Create new Veterinarian
         user = new Veterinarian({
           firstName: given_name || normalizedEmail.split('@')[0],
@@ -288,14 +310,17 @@ exports.googleLogin = async (req, res) => {
           email: normalizedEmail,
           googleId,
           accessLevel: 'Enhanced',
-          status: 'Active'
+          status: 'Active',
+          assignedClinics,
+          clinicId: currentActiveClinicId,
+          currentActiveClinicId
         });
       } else {
         // Create new Pet Owner
         user = new PetOwner({
-        firstName: given_name || normalizedEmail.split('@')[0],
-        lastName: family_name || 'Owner',
-        email: normalizedEmail,
+          firstName: given_name || normalizedEmail.split('@')[0],
+          lastName: family_name || 'Owner',
+          email: normalizedEmail,
           googleId,
           profilePhoto: picture,
           address: 'Please update your address',
@@ -306,9 +331,17 @@ exports.googleLogin = async (req, res) => {
       actualRole = role;
       isNewUser = true;
     } else {
-      // Link googleId if not linked
+      // Link googleId if not linked, or update email if it changed in Google
+      let updated = false;
       if (!user.googleId) {
         user.googleId = googleId;
+        updated = true;
+      }
+      // Optional: keep email in sync with Google if it changed?
+      // Some apps prefer to keep the original email for identification
+      // For now, let's just make sure googleId is linked
+      
+      if (updated) {
         await user.save();
       }
     }

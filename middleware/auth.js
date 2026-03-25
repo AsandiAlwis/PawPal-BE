@@ -159,6 +159,7 @@ exports.protect = async (req, res, next) => {
       req.user.currentActiveClinicId = user.currentActiveClinicId || null;
       req.user.isPrimaryVet = user.isPrimaryVet || false;
       req.user.ownedClinics = user.ownedClinics || [];
+      req.user.assignedClinics = user.assignedClinics || [];
       req.user.staffRole = user.role || null;
 
       console.log('Vet clinic info:', req.user.clinic);

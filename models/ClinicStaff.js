@@ -15,7 +15,8 @@ const clinicStaffSchema = new mongoose.Schema({
   lastName: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
   phoneNumber: { type: String },
-  passwordHash: { type: String, required: true },
+  passwordHash: { type: String, required: false }, // Optional for Google Auth users
+  googleId: { type: String, unique: true, sparse: true },
   role: {
     type: String,
     required: true

@@ -39,13 +39,15 @@ exports.sendMessage = async (req, res) => {
     // Emit via Socket.IO to the pet's chat room for real-time delivery
     const io = req.app.get('socketio');
     if (io) {
+      console.log(`💬 Chat: Emitting new_message to chat_pet_${petId}`);
       io.to(`chat_pet_${petId}`).emit('new_message', populatedMessage);
 
       // Also emit a notification to the other party's room
       if (senderType === 'Owner') {
-        // Notify vet/clinic staff — emit to clinic channel
-        if (pet.registeredClinicId?._id) {
-          io.to(`clinic_${pet.registeredClinicId._id}`).emit('chat_notification', {
+        const clinicId = pet.registeredClinicId?._id || pet.registeredClinicId;
+        if (clinicId) {
+          console.log(`📡 Chat: Notifying clinic_${clinicId} about new message`);
+          io.to(`clinic_${clinicId}`).emit('chat_notification', {
             petId,
             petName: pet.name,
             senderName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || 'Owner',
@@ -53,9 +55,10 @@ exports.sendMessage = async (req, res) => {
           });
         }
       } else {
-        // Notify owner
-        if (pet.ownerId?._id) {
-          io.to(`user_${pet.ownerId._id}`).emit('chat_notification', {
+        const ownerId = pet.ownerId?._id || pet.ownerId;
+        if (ownerId) {
+          console.log(`📡 Chat: Notifying user_${ownerId} about new message`);
+          io.to(`user_${ownerId}`).emit('chat_notification', {
             petId,
             petName: pet.name,
             senderName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || 'Vet',

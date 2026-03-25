@@ -48,6 +48,24 @@ exports.createMedicalRecord = async (req, res) => {
       message: 'Medical record created successfully',
       record
     });
+
+    // === REAL-TIME NOTIFICATION ===
+    if (visibleToOwner) {
+      const io = req.app.get('socketio');
+      if (io) {
+        // Fetch pet ownerId to notify them
+        const petForNotif = await PetProfile.findById(petId).select('ownerId');
+        if (petForNotif && petForNotif.ownerId) {
+          io.to(`user_${petForNotif.ownerId}`).emit('appointmentStatusChanged', {
+             _id: record._id,
+             petId: { _id: petId, name: pet.name },
+             status: 'Completed', // We use this event to trigger re-fetch in NotificationBell
+             medicalRecordUrl: attachments[0] || null
+          });
+          console.log(`📡 Socket: Notified owner ${petForNotif.ownerId} about new medical record for ${pet.name}`);
+        }
+      }
+    }
   } catch (error) {
     console.error('Error creating medical record:', error);
     res.status(500).json({

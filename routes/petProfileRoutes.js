@@ -54,7 +54,7 @@ router.get('/test-simple', protect, authorize('vet'), async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-//  Get pending registrations for vet's current clinic
+//  Get pending or approved registrations for vet's current clinic
 // ────────────────────────────────────────────────
 router.get('/clinic/pending', protect, authorize('vet'), async (req, res) => {
   try {
@@ -62,17 +62,35 @@ router.get('/clinic/pending', protect, authorize('vet'), async (req, res) => {
     console.log('User:', req.user.id, req.user.role);
 
     const isEnhanced = req.user.accessLevel === 'Enhanced';
+    const status = req.query.status || 'Pending';
 
     let query = {
-      registrationStatus: 'Pending',
+      registrationStatus: status,
       isDeleted: { $ne: true }
     };
 
     if (!isEnhanced) {
-      if (!req.user.clinicId) {
+      const allowedClinics = new Set([
+        ...(req.user.assignedClinics || []).map(id => id.toString()),
+        ...(req.user.ownedClinics || []).map(id => id.toString())
+      ]);
+      
+      if (req.user.currentActiveClinicId) {
+        const id = req.user.currentActiveClinicId._id || req.user.currentActiveClinicId;
+        allowedClinics.add(id.toString());
+      }
+      if (req.user.clinicId) {
+        const id = req.user.clinicId._id || req.user.clinicId;
+        allowedClinics.add(id.toString());
+      }
+
+      const allowedClinicIds = Array.from(allowedClinics);
+
+      if (allowedClinicIds.length === 0) {
         return res.status(200).json({ success: true, count: 0, pendingPets: [], isGlobalView: false });
       }
-      query.registeredClinicId = req.user.clinicId;
+
+      query.registeredClinicId = { $in: allowedClinicIds };
     }
 
     const pendingPets = await PetProfile.find(query)
