@@ -238,15 +238,10 @@ const getVetsByClinic = async (req, res) => {
 
 
     const clinic = await Clinic.findById(clinicId);
-
-    console.log('-------------------------', clinic)
     if (!clinic) {
       return res.status(404).json({ message: 'Clinic not found' });
     }
 
-    console.log('=== getVetsByClinic DEBUG ===');
-    console.log('Target Clinic ID:', clinicId);
-    
     const mongooseClinicId = new mongoose.Types.ObjectId(clinicId);
 
     // Find vets who have this clinic as their current active clinic OR own it OR are assigned
@@ -261,9 +256,6 @@ const getVetsByClinic = async (req, res) => {
     })
       .select('-passwordHash')
       .sort({ accessLevel: -1, firstName: 1 });
-
-    console.log(`Found ${vets.length} vets for clinic ${clinicId}:`, vets.map(v => `${v.firstName} ${v.lastName} (ID: ${v._id})`));
-    console.log('=============================');
 
     res.status(200).json({
       clinicName: clinic.name,
@@ -1256,7 +1248,7 @@ const activateVet = async (req, res) => {
 const getVetNotifications = async (req, res) => {
   try {
     const vetId = req.user.id;
-    console.log(`Fetching notifications for Vet: ${vetId}`);
+    // let vet = ...
 
     let vet = await Veterinarian.findById(vetId);
     let isStaff = false;
@@ -1391,7 +1383,7 @@ const getVetNotifications = async (req, res) => {
       };
     });
 
-    console.log(`📡 VetNotifications for ${vet.firstName}: Regs:${pendingRegistrations.length}, Appts:${upcomingAppointments.length}, Chats:${transformedChats.length}`);
+    // res.status(200).json...
 
     res.status(200).json({
       success: true,
@@ -1414,7 +1406,7 @@ const getVetNotifications = async (req, res) => {
 const markNotificationAsRead = async (req, res) => {
   try {
     const { type, id } = req.params;
-    console.log(`Marking notification as read: type=${type}, id=${id}`);
+    // let result = null...
 
     let result = null;
     if (type === 'registration') {
@@ -1425,7 +1417,7 @@ const markNotificationAsRead = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid notification type' });
     }
 
-    console.log(`Update result for ${type} ${id}:`, result);
+    // res.status(200).json...
     res.status(200).json({
       success: true,
       message: 'Notification marked as read',

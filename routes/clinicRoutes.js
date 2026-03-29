@@ -10,6 +10,7 @@ const {
   searchClinics,
   getAllClinics,
   getMyClinic,
+  getClinicsForOwner,
   getClinicStaff,
   addClinicStaff,
   getClinicStaffCount,
@@ -27,8 +28,9 @@ router.get('/nearby', getNearbyClinics);
 router.get('/search', searchClinics);
 router.get('/', getAllClinics);
 
-// === Protected Vet Routes ===
+// === Protected Routes ===
 router.get('/my', protect, getMyClinic);
+router.get('/my-owner', protect, authorize('owner'), getClinicsForOwner);
 
 // STAFF ROUTES - MUST COME BEFORE /:id !!!
 router.get('/staff', protect, authorize('vet'), authorizeVetAccess('Enhanced'), getClinicStaff);

@@ -11,6 +11,8 @@ const {
   manageAppointment,
   getAppointmentById,
   getTodayAppointmentsCountByVet,
+  getTodayAppointmentsCountByClinic,
+  getAppointmentsByClinic,
   getMyAppointments,
   rescheduleAppointment,
   getOwnerNotifications,
@@ -48,11 +50,9 @@ router.get('/:id', protect, getAppointmentById);
 router.get('/vet/:vetId', protect, getAppointmentsByVet);
 
 // routes/appointmentRoutes.js
-router.get(
-  '/vet/:vetId/today-count',
-  protect,
-  getTodayAppointmentsCountByVet
-);
+router.get('/vet/:vetId/today-count', protect, getTodayAppointmentsCountByVet);
+router.get('/clinic/:clinicId/today-count', protect, getTodayAppointmentsCountByClinic);
+router.get('/clinic/:clinicId', protect, getAppointmentsByClinic);
 //router.get('/clinic/:clinicId/upcoming', protect, authorize('vet'), getUpcomingAppointmentsByClinic);
 
 // Update appointment (vet only)

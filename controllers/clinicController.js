@@ -1,6 +1,7 @@
 const Clinic = require('../models/Clinic');
 const Veterinarian = require('../models/Veterinarian');
 const ClinicStaff = require('../models/ClinicStaff');
+const PetProfile = require('../models/PetProfile');
 const bcrypt = require('bcryptjs');
 
 // Create a new clinic (Enhanced vet can create multiple clinics)
@@ -85,9 +86,6 @@ exports.createClinic = async (req, res) => {
 // Get clinics for the logged-in veterinarian
 exports.getMyClinic = async (req, res) => {
   try {
-    console.log('=== getMyClinic called ===');
-    console.log('req.user:', req.user);
-
     if (!req.user || !req.user.id) {
       return res.status(200).json({ clinics: [] });
     }
@@ -208,8 +206,6 @@ exports.updateClinic = async (req, res) => {
     const { id } = req.params;
     const updates = req.body;
 
-    console.log('-------------', req);
-
     // Check authentication
     if (!req.user || req.user.role !== 'vet') {
       return res.status(403).json({
@@ -315,10 +311,6 @@ exports.deleteClinic = async (req, res) => {
 // Unified endpoint: Add either a Veterinarian (sub-account) or non-vet ClinicStaff
 exports.addClinicStaff = async (req, res) => {
   try {
-    console.log('=== addClinicStaff called ===');
-    console.log('Request body:', req.body);
-    console.log('User from JWT:', req.user);
-
     const {
       staffType,           // Required: 'veterinarian' or any other value
       firstName,
@@ -669,7 +661,6 @@ exports.getClinicStaffCount = async (req, res) => {
     }
 
 
-
     // Verify clinic exists
     const clinicExists = await Clinic.findById(clinicId);
     if (!clinicExists) {
@@ -719,10 +710,6 @@ exports.getClinicStaffById = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    console.log('=== GET CLINIC STAFF BY ID DEBUG ===');
-    console.log('Staff ID:', id);
-    console.log('User ID:', userId);
-
     // Import models
     const ClinicStaff = require('../models/ClinicStaff');
     const Veterinarian = require('../models/Veterinarian');
@@ -737,23 +724,6 @@ exports.getClinicStaffById = async (req, res) => {
         message: 'Clinic staff member not found'
       });
     }
-
-    console.log('Found clinic staff:', staffMember.firstName, staffMember.lastName);
-    console.log('Staff clinic ID:', staffMember.clinicId?._id);
-
-    // Check if user has permission to view this staff
-    const user = await Veterinarian.findById(userId);
-    let hasPermission = false;
-
-    if (user && user.accessLevel === 'Enhanced') {
-      // Enhanced vet must own the clinic OR have it as active
-      hasPermission = (user.ownedClinics && user.ownedClinics.some(clinicId =>
-        clinicId.toString() === staffMember.clinicId._id.toString()
-      )) || (user.currentActiveClinicId && user.currentActiveClinicId.toString() === staffMember.clinicId._id.toString());
-    }
-
-    console.log('Has permission?', hasPermission);
-    console.log('User owned clinics:', user?.ownedClinics?.map(c => c.toString()));
 
     if (!hasPermission) {
       return res.status(403).json({
@@ -799,11 +769,6 @@ exports.updateClinicStaff = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
     const updates = req.body;
-
-    console.log('=== UPDATE CLINIC STAFF DEBUG ===');
-    console.log('Staff ID:', id);
-    console.log('User ID:', userId);
-    console.log('Updates:', updates);
 
     const ClinicStaff = require('../models/ClinicStaff');
     const Veterinarian = require('../models/Veterinarian');
@@ -895,10 +860,6 @@ exports.deactivateClinicStaff = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    console.log('=== DEACTIVATE CLINIC STAFF DEBUG ===');
-    console.log('Staff ID:', id);
-    console.log('User ID:', userId);
-
     const ClinicStaff = require('../models/ClinicStaff');
     const Veterinarian = require('../models/Veterinarian');
 
@@ -949,10 +910,6 @@ exports.activateClinicStaff = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
-
-    console.log('=== ACTIVATE CLINIC STAFF DEBUG ===');
-    console.log('Staff ID:', id);
-    console.log('User ID:', userId);
 
     const ClinicStaff = require('../models/ClinicStaff');
     const Veterinarian = require('../models/Veterinarian');
@@ -1005,10 +962,6 @@ exports.deleteClinicStaff = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    console.log('=== DELETE CLINIC STAFF DEBUG ===');
-    console.log('Staff ID:', id);
-    console.log('User ID:', userId);
-
     const ClinicStaff = require('../models/ClinicStaff');
     const Veterinarian = require('../models/Veterinarian');
 
@@ -1046,3 +999,55 @@ exports.deleteClinicStaff = async (req, res) => {
     });
   }
 };
+
+// Get clinics where the logged-in owner's pets are registered
+exports.getClinicsForOwner = async (req, res) => {
+  try {
+    const ownerId = req.user.id;
+
+    // Find all approved pet profiles for this owner
+    const petProfiles = await PetProfile.find({
+      ownerId,
+      registrationStatus: 'Approved',
+      isDeleted: { $ne: true }
+    }).select('registeredClinicId');
+
+    // Extract unique clinic IDs
+    const clinicIds = [...new Set(petProfiles.map(p => p.registeredClinicId?.toString()).filter(id => !!id))];
+
+    if (clinicIds.length === 0) {
+      return res.status(200).json({ success: true, count: 0, clinics: [] });
+    }
+
+    // Fetch clinic details
+    const clinics = await Clinic.find({
+      _id: { $in: clinicIds }
+    }).select('-__v');
+
+    // Optionally add pet counts for each clinic
+    const clinicsWithPetCounts = await Promise.all(clinics.map(async (clinic) => {
+      const petCount = await PetProfile.countDocuments({
+        ownerId,
+        registeredClinicId: clinic._id,
+        registrationStatus: 'Approved',
+        isDeleted: { $ne: true }
+      });
+      return {
+        ...clinic.toObject(),
+        petsCount: petCount
+      };
+    }));
+
+    res.status(200).json({
+      success: true,
+      count: clinicsWithPetCounts.length,
+      clinics: clinicsWithPetCounts
+    });
+  } catch (error) {
+    console.error('Error fetching clinics for owner:', error);
+    res.status(500).json({
+      message: 'Error fetching your clinics',
+      error: error.message
+    });
+  }
+};

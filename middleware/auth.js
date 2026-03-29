@@ -14,7 +14,6 @@ exports.protect = async (req, res, next) => {
   }
 
   if (!token) {
-    console.log('No token provided');
     return res.status(401).json({
       success: false,
       message: 'Not authorized, no token provided'
@@ -24,13 +23,9 @@ exports.protect = async (req, res, next) => {
   try {
     // Verify token
     const decoded = jwt.verify(token, JWT_SECRET);
-    console.log('Token verified successfully:', decoded);
 
     const userId = decoded.id || decoded._id;
     let role = decoded.role; // This should always exist in a well-formed token
-
-    console.log('User ID from token:', userId);
-    console.log('Role from token:', role);
 
     if (!userId) {
       console.error('No user ID found in token');
@@ -41,24 +36,20 @@ exports.protect = async (req, res, next) => {
     }
 
     if (!role || !['owner', 'vet'].includes(role)) {
-      console.log('No valid role in token, attempting to determine from database...');
 
       // Fallback: try to discover who this user is
       let user = await Veterinarian.findById(userId).select('-passwordHash');
       if (user) {
         role = 'vet';
-        console.log('Determined role: vet');
       } else {
         const ClinicStaff = require('../models/ClinicStaff');
         user = await ClinicStaff.findById(userId).select('-passwordHash');
         if (user) {
           role = 'vet';
-          console.log('Determined role: vet (ClinicStaff)');
         } else {
           user = await PetOwner.findById(userId).select('-passwordHash');
           if (user) {
             role = 'owner';
-            console.log('Determined role: owner');
           }
         }
       }
@@ -76,7 +67,6 @@ exports.protect = async (req, res, next) => {
     let user;
     if (role === 'owner') {
       user = await PetOwner.findById(userId).select('-passwordHash');
-      console.log('Fetched PetOwner:', user ? 'Found' : 'Not found');
     } else if (role === 'vet') {
       try {
         user = await Veterinarian.findById(userId)
@@ -90,11 +80,9 @@ exports.protect = async (req, res, next) => {
             .populate('clinicId', 'name address phoneNumber');
 
           if (user) {
-            user.currentActiveClinicId = user.clinicId; // Map for downstream middleware
             user.role = 'vet'; // Ensure logical processing
           }
         }
-        console.log('Fetched Veterinarian/Staff with populate:', user ? 'Found' : 'Not found');
       } catch (populateError) {
         console.log('Populate failed:', populateError.message);
         user = await Veterinarian.findById(userId).select('-passwordHash');
@@ -102,11 +90,9 @@ exports.protect = async (req, res, next) => {
           const ClinicStaff = require('../models/ClinicStaff');
           user = await ClinicStaff.findById(userId).select('-passwordHash');
           if (user) {
-            user.currentActiveClinicId = user.clinicId;
             user.role = 'vet';
           }
         }
-        console.log('Fetched Veterinarian/Staff (no populate):', user ? 'Found' : 'Not found');
       }
     }
 
@@ -161,8 +147,6 @@ exports.protect = async (req, res, next) => {
       req.user.ownedClinics = user.ownedClinics || [];
       req.user.assignedClinics = user.assignedClinics || [];
       req.user.staffRole = user.role || null;
-
-      console.log('Vet clinic info:', req.user.clinic);
     }
 
     next();
@@ -197,8 +181,6 @@ exports.protect = async (req, res, next) => {
 // Authorize specific roles (owner / vet)
 exports.authorize = (...roles) => {
   return (req, res, next) => {
-    console.log('Authorization check - User:', req.user?.id, 'Role:', req.user?.role);
-    console.log('Required roles:', roles);
 
     if (!req.user || !req.user.role) {
       return res.status(401).json({
@@ -214,7 +196,6 @@ exports.authorize = (...roles) => {
       });
     }
 
-    console.log('Authorization passed');
     next();
   };
 };

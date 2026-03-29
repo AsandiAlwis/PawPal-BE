@@ -10,7 +10,7 @@ const path = require('path');
 const fs = require('fs/promises');
 const nodemailer = require('nodemailer');
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 const http = require('http');
@@ -155,7 +155,6 @@ let currentOllamaModel = OLLAMA_MODEL;
 
 // Load all documents from pet_data folder
 async function loadPetData() {
-  console.log(`📂 Loading pet knowledge from: ${PET_DATA_FOLDER}`);
 
   try {
     // Check if folder exists
@@ -163,7 +162,6 @@ async function loadPetData() {
     const files = await fs.readdir(PET_DATA_FOLDER);
 
     if (files.length === 0) {
-      console.log('⚠️ No files found in pet_data folder');
       return;
     }
 
@@ -194,7 +192,7 @@ async function loadPetData() {
             });
           });
 
-          console.log(`   ✓ Loaded: ${file} (${chunks.length} chunks)`);
+          // chunks.forEach(...)
 
         } else if (file.endsWith('.json')) {
           const content = await fs.readFile(filePath, 'utf-8');
@@ -218,7 +216,7 @@ async function loadPetData() {
                 totalQuestions++;
               }
             });
-            console.log(`   ✓ Loaded: ${file} (${data.length} Q&A pairs)`);
+              // totalQuestions++;
           } else {
             // Handle other JSON structures
             petKnowledgeBase.push({
@@ -228,7 +226,7 @@ async function loadPetData() {
               type: 'json_data',
               metadata: { originalFile: file }
             });
-            console.log(`   ✓ Loaded: ${file} (JSON data)`);
+              // metadata: { originalFile: file }
           }
         }
       } catch (fileError) {
@@ -236,7 +234,7 @@ async function loadPetData() {
       }
     }
 
-    console.log(`✅ Loaded ${petKnowledgeBase.length} knowledge items (${totalQuestions} Q&A pairs)`);
+    // petKnowledgeBase.push...
 
   } catch (error) {
     console.error(`❌ Error accessing pet_data folder:`, error.message);
@@ -279,14 +277,12 @@ function splitTextIntoChunks(text, chunkSize = 500) {
 // Check Ollama availability
 async function checkOllama() {
   try {
-    console.log('🔍 Checking Ollama connection...');
     const response = await axios.get(`${OLLAMA_BASE_URL}/api/tags`, {
       timeout: 5000
     });
 
     if (response.data && response.data.models) {
       const models = response.data.models;
-      console.log(`📋 Available models:`, models.map(m => m.name).join(', '));
 
       // Prioritize better models
       const preferredModels = ['llama3.2:latest', 'llama3.2', 'llama3.2:1b', 'llama3.2:3b'];
@@ -301,7 +297,7 @@ async function checkOllama() {
         });
 
         if (match) {
-          console.log(`🎯 Testing preferred model: ${match.name}`);
+          // console.log(`🎯 Testing preferred model: ${match.name}`);
           try {
             const testResponse = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
               model: match.name,
@@ -314,7 +310,7 @@ async function checkOllama() {
               break;
             }
           } catch (e) {
-            console.log(`   Model ${match.name} test failed: ${e.message}`);
+            // console.log(`   Model ${match.name} test failed: ${e.message}`);
           }
         }
       }
@@ -323,7 +319,7 @@ async function checkOllama() {
       if (!discoveredModel && models.length > 0) {
         for (const m of models) {
           if (preferredModels.some(p => m.name.toLowerCase().startsWith(p))) continue; // Already tried
-          console.log(`⚠️ Trying fallback model: ${m.name}`);
+          // console.log(`⚠️ Trying fallback model: ${m.name}`);
           try {
             const res = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
               model: m.name,
@@ -341,7 +337,6 @@ async function checkOllama() {
       if (discoveredModel) {
         currentOllamaModel = discoveredModel;
         isOllamaAvailable = true;
-        console.log(`✅ AI ACTIVATED with model: ${currentOllamaModel}`);
       } else {
         console.log('⚠️ No functional AI models found in Ollama.');
         isOllamaAvailable = false;
@@ -479,7 +474,7 @@ ${query}
 
 [Dr. Sara's Response]`;
 
-    console.log(`🤖 Sending to Ollama (${currentOllamaModel}...`);
+    // headers should be plain text...
 
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: currentOllamaModel,
@@ -493,7 +488,7 @@ ${query}
       }
     }, { timeout: 45000 }); // Increased timeout
 
-    console.log(`✅ Ollama response received (${response.data.response.length} chars)`);
+    // options: { ... }
 
     // Safety formatting: ensure bullets and numbers have newlines
     let cleaned = response.data.response;
@@ -528,7 +523,6 @@ ${query}
 
     // Check if it's a model not found error
     if (error.message.includes('model') && error.message.includes('not found')) {
-      console.log('🔄 Trying to find an alternative model...');
       isOllamaAvailable = false;
     }
 
@@ -538,10 +532,8 @@ ${query}
 
 // Initialize on startup
 async function initializeChatbot() {
-  console.log('🚀 Initializing Pet Health Chatbot...');
   await loadPetData();
   await checkOllama();
-  console.log(`💬 Chatbot ready! Mode: ${isOllamaAvailable ? 'AI + Knowledge Base' : 'Knowledge Base Only'}`);
 }
 
 // Chatbot Endpoint
@@ -552,8 +544,6 @@ app.post('/api/pet-chatbot', async (req, res) => {
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' });
     }
-
-    console.log(`\n💬 User query: "${message}"`);
 
     // Emergency detection
     const lowerMsg = message.toLowerCase();
@@ -587,22 +577,16 @@ I understand this seems urgent. Please take these immediate steps:
     // Search for relevant information
     const searchResult = searchKnowledgeBase(message);
 
-    console.log(`🔍 Found ${searchResult.sources.length} relevant sources`);
-
     let response;
     let source;
     let aiGenerated = false;
 
     if (isOllamaAvailable && currentOllamaModel) {
       try {
-        console.log(`🤖 Generating AI response with ${currentOllamaModel}...`);
         response = await getOllamaResponse(message, searchResult.context);
         source = 'ai_with_knowledge_base';
         aiGenerated = true;
-        console.log(`✅ AI response generated successfully`);
       } catch (ollamaError) {
-        console.warn('❌ Ollama failed:', ollamaError.message);
-        console.log('📚 Falling back to knowledge base only');
         response = `**Based on our pet health knowledge base:**\n\n`;
 
         // Format the knowledge base results nicely
@@ -621,7 +605,6 @@ I understand this seems urgent. Please take these immediate steps:
         aiGenerated = false;
       }
     } else {
-      console.log('📚 Using knowledge base only (no AI)');
       response = `**Based on our pet health knowledge base:**\n\n`;
 
       // Format the knowledge base results nicely
@@ -777,55 +760,39 @@ async function startServer() {
 
   // Socket.IO handlers
   io.on('connection', (socket) => {
-    console.log('🔌 New client connected:', socket.id);
 
     // Join a personal notification room (e.g. user_<userId>)
     socket.on('join_user', (userId) => {
       socket.join(`user_${userId}`);
-      console.log(`👤 User joined room: user_${userId}`);
     });
 
     // Join clinic notification room (e.g. clinic_<clinicId>)
     socket.on('join_clinic', (clinicId) => {
       socket.join(`clinic_${clinicId}`);
-      console.log(`🏥 Joined clinic room: clinic_${clinicId}`);
     });
 
     // Join pet-specific chat room for real-time messages
     socket.on('join_chat', (petId) => {
       socket.join(`chat_pet_${petId}`);
-      console.log(`🐾 Joined chat room: chat_pet_${petId}`);
     });
 
     // Leave a pet chat room
     socket.on('leave_chat', (petId) => {
       socket.leave(`chat_pet_${petId}`);
-      console.log(`🚪 Left chat room: chat_pet_${petId}`);
     });
 
     // Legacy join (kept for backward compatibility)
     socket.on('join', (userId) => {
       socket.join(userId);
-      console.log(`👤 User joined room: ${userId}`);
     });
 
+    // Client disconnected
     socket.on('disconnect', () => {
-      console.log('🔌 Client disconnected');
     });
   });
 
   server.listen(PORT, () => {
-    console.log(`\n🚀 Server running on port ${PORT}`);
-    console.log(`📁 Data folder: ${PET_DATA_FOLDER}`);
-    console.log(`📚 Knowledge base: ${petKnowledgeBase.length} items loaded`);
-    console.log(`🤖 AI Status: ${isOllamaAvailable ? `✅ Ready (${currentOllamaModel})` : '❌ Not available'}`);
-    console.log(`\n🔗 Test Endpoints:`);
-    console.log(`   • Health check: http://localhost:${PORT}/health`);
-    console.log(`   • Test Ollama: http://localhost:${PORT}/api/test-ollama`);
-    console.log(`\n💬 Try the chatbot:`);
-    console.log(`   curl -X POST http://localhost:${PORT}/api/pet-chatbot \\`);
-    console.log(`        -H "Content-Type: application/json" \\`);
-    console.log(`        -d '{"message": "What should I feed my puppy?"}'`);
+    console.log(`🚀 Server running on port ${PORT}`);
   });
 
   process.on('SIGTERM', () => {
