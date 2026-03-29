@@ -547,24 +547,44 @@ app.post('/api/pet-chatbot', async (req, res) => {
 
     // Emergency detection
     const lowerMsg = message.toLowerCase();
-    const emergencyKeywords = ['emergency', 'bleeding', 'choking', 'not breathing', 'poison', 'seizure', 'dying', 'urgent'];
+    const emergencyMap = {
+      'bleed': '🩸 **Bleeding**: Apply firm, direct pressure to the wound with a clean cloth. Do not apply a tourniquet unless instructed.',
+      'poison': '🧪 **Poisoning**: Do not induce vomiting unless told by a vet. Bring the substance or packaging with you.',
+      'seizure': '🌀 **Seizure**: Move objects away from your pet. Do not try to hold them or their tongue.',
+      'chok': '🦴 **Choking**: Gently clear the mouth if you can see the object. Do not push it deeper.',
+      'breath': '🫁 **Respiratory**: Check for airway blockage. Keep the pet upright and seek help immediately.',
+      'unconscious': '💤 **Unconscious**: Check for breathing/pulse. Keep them flat and warm during transport.',
+      'snake bite': '🐍 **Snake Bite**: Keep your pet extremely still. Do not cut or suck the wound.',
+      'dying': '⚠️ **Critical**: Every second counts. Get to a vet immediately.'
+    };
 
-    if (emergencyKeywords.some(keyword => lowerMsg.includes(keyword))) {
+    let specificAdvice = [];
+    Object.keys(emergencyMap).forEach(key => {
+      if (lowerMsg.includes(key)) {
+        specificAdvice.push(emergencyMap[key]);
+      }
+    });
+
+    if (specificAdvice.length > 0 || lowerMsg.includes('emergency') || lowerMsg.includes('urgent')) {
+      const adviceSection = specificAdvice.length > 0 
+        ? `\n**Immediate Actions:**\n${specificAdvice.join('\n')}\n` 
+        : "";
+
       const emergencyResponse = `🚨 **EMERGENCY DETECTED**
 
-I understand this seems urgent. Please take these immediate steps:
-
-1. **Stay calm** - Your pet needs you to be calm
+I understand this is urgent. Please follow these instructions:
+${adviceSection}
+**General Steps:**
+1. **Stay calm** - Your pet needs you focused
 2. **Call emergency vet immediately**: 011-2694533 (Colombo) or 077-1234567
-3. **Do not give** any human medications unless instructed by a vet
-4. **Keep your pet warm and still** during transport
+3. **Transport safely** - Keep your pet warm and still
 
 **Sri Lanka Emergency Contacts:**
 - Colombo Veterinary Hospital: 011-2694533
 - Animal SOS: 011-2712755
 - Kandy Veterinary Hospital: 081-2222444
 
-⚠️ **This is an automated emergency alert. Please seek professional veterinary care immediately.**`;
+⚠️ **Seek professional veterinary care immediately.**`;
 
       return res.json({
         response: emergencyResponse,

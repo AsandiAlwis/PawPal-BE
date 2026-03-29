@@ -30,6 +30,7 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^8.0.1",
     "pdfkit": "^0.17.2",
+    "pm2": "^6.0.14",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "speakeasy": "^2.0.0"
